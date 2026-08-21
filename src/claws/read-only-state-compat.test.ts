@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -42,6 +43,9 @@ function createBaseShapeState(params: {
   for (const column of OPENCLAW_STATE_MAINTENANCE_SCHEMA_COMPATIBILITY.allowedMissingColumns ??
     []) {
     const [table, name] = column.split(".");
+    if (!table || !tableExists(database.db, table)) {
+      continue;
+    }
     database.db.exec(`ALTER TABLE ${table} DROP COLUMN ${name};`);
   }
   closeOpenClawStateDatabaseForTest();
