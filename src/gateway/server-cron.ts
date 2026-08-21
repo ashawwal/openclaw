@@ -711,6 +711,7 @@ export function buildGatewayCronService(params: {
               state,
               streamBatch,
               toolsAllow: job.payload.toolsAllow,
+              runtimeAuthority: job.runtimeAuthority,
               scheduledToolPolicy: resolveCronScheduledToolPolicy({
                 toolsAllow: job.payload.toolsAllow,
                 scheduledToolPolicy: job.scheduledToolPolicy,
@@ -912,6 +913,7 @@ export function buildGatewayCronService(params: {
         state: job.state.triggerState,
         streamBatch,
         toolsAllow: job.payload.toolsAllow,
+        runtimeAuthority: job.runtimeAuthority,
         scheduledToolPolicy: resolveCronScheduledToolPolicy({
           toolsAllow: job.payload.toolsAllow,
           scheduledToolPolicy: job.scheduledToolPolicy,
