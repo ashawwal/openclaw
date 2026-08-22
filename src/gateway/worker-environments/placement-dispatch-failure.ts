@@ -80,6 +80,7 @@ export type WorkerDispatchEnvironmentService = Pick<
   | "reconcileOnce"
   | "startTunnel"
   | "stopTunnel"
+  | "supportsProviderExecutionMode"
 >;
 
 export type WorkerActivationBarrier = (params: {

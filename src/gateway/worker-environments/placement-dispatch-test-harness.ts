@@ -62,6 +62,9 @@ export function createHarness(
     beforeMoveBegin?: (abandoned: { runId: string } | undefined) => Promise<void>;
     afterMoveBegin?: () => void;
     deviceRunnerAvailable?: boolean;
+    isCurrentNodePlacement?: Parameters<
+      typeof createWorkerPlacementDispatchService
+    >[0]["isCurrentNodePlacement"];
   } = {},
 ) {
   const reconciledManifestRef = MANIFEST_REF.replaceAll("b", "c");
@@ -321,6 +324,7 @@ export function createHarness(
     expiresAtMs: 10_000,
   };
   const environments: WorkerDispatchEnvironmentService = {
+    supportsProviderExecutionMode: vi.fn(() => true),
     create: vi.fn(async () => {
       fail("create");
       return currentEnvironment ?? ready;
@@ -434,6 +438,7 @@ export function createHarness(
             consumesWorkerSlot: false,
           }
         : { requiredNodeCommands: [], consumesWorkerSlot: true },
+    isCurrentNodePlacement: options.isCurrentNodePlacement ?? (() => true),
     runReclaimBarrier: async ({ authorize, begin, reclaim }) => {
       authorize?.();
       return await reclaim(options.workspacePath ?? "/gateway/workspace", begin());
@@ -498,7 +503,7 @@ export function createHarness(
       currentEnvironment = { ...attached, ownerEpoch };
     },
     markEnvironmentNodeDeviceId: (nodeDeviceId: string) => {
-      currentEnvironment = { ...attached, providerId: "device", nodeDeviceId };
+      currentEnvironment = { ...attached, providerId: "device", nodeDeviceId, sshEndpoint: null };
     },
     markEnvironmentAttachments: (attachedSessionIds: string[]) => {
       currentEnvironment = { ...attached, attachedSessionIds };

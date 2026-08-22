@@ -405,11 +405,12 @@ describe("worker turn launcher local placement", () => {
   );
 
   it.each([
-    { label: "SSH", nodeDeviceId: undefined },
-    { label: "paired-device", nodeDeviceId: "paired-node-1" },
+    { label: "SSH", nodeDeviceId: undefined, providerId: "fake" },
+    { label: "paired-device", nodeDeviceId: "paired-node-1", providerId: "device" },
+    { label: "cloud-node", nodeDeviceId: "cloud-node-1", providerId: "crabbox" },
   ])(
     "runs a $label remote-exec placement locally and reconciles without launching a worker child",
-    async ({ nodeDeviceId }) => {
+    async ({ nodeDeviceId, providerId }) => {
       seedActivePlacement("remote-exec");
       const order: string[] = [];
       const launchTurn = vi.fn();
@@ -448,7 +449,7 @@ describe("worker turn launcher local placement", () => {
         ...unusedEnvironments(),
         get: vi.fn(() =>
           nodeDeviceId
-            ? { ...attachedEnvironment(), providerId: "device", nodeDeviceId, sshEndpoint: null }
+            ? { ...attachedEnvironment(), providerId, nodeDeviceId, sshEndpoint: null }
             : attachedEnvironment(),
         ),
         startTunnel: vi.fn(async () => tunnel),
@@ -659,11 +660,13 @@ describe("worker turn launcher local placement", () => {
   );
 
   it.each([
-    { label: "failed execution", executionFailed: true },
-    { label: "successful execution", executionFailed: false },
+    { label: "failed paired-device execution", executionFailed: true, providerId: "device" },
+    { label: "successful paired-device execution", executionFailed: false, providerId: "device" },
+    { label: "failed cloud-node execution", executionFailed: true, providerId: "crabbox" },
+    { label: "successful cloud-node execution", executionFailed: false, providerId: "crabbox" },
   ])(
-    "preserves a disconnected paired-node placement after $label for a fresh attempt",
-    async ({ executionFailed }) => {
+    "preserves a disconnected node-backed placement after $label for a fresh attempt",
+    async ({ executionFailed, providerId }) => {
       seedActivePlacement("remote-exec");
       const original = placements.get(SESSION_ID);
       if (original?.state !== "active") {
@@ -702,7 +705,7 @@ describe("worker turn launcher local placement", () => {
       };
       const environment = {
         ...attachedEnvironment(),
-        providerId: "device",
+        providerId,
         nodeDeviceId: "paired-node-1",
         sshEndpoint: null,
       };

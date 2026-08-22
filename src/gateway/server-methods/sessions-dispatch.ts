@@ -160,18 +160,17 @@ async function validateDispatchExecutionMode(params: {
     respondInvalidWorkerSession(params.respond, eligibility.error);
     return false;
   }
+  const environmentService = params.context.workerEnvironmentService;
   if (
-    params.executionMode !== "remote-exec" ||
-    params.context.workerEnvironmentService?.supportsExecutionMode?.(
-      params.target.profileId,
-      params.executionMode,
-    ) === true
+    (params.executionMode === "worker-turn" && !environmentService?.supportsExecutionMode) ||
+    environmentService?.supportsExecutionMode?.(params.target.profileId, params.executionMode) ===
+      true
   ) {
     return true;
   }
   respondInvalidWorkerSession(
     params.respond,
-    `runtime ${params.sessionRuntime} requires an SSH-backed cloud worker provider; choose a provider that supports remote-exec, or select an agent/model route with agentRuntime.id "openclaw"`,
+    `runtime ${params.sessionRuntime} requires a cloud worker provider that supports ${params.executionMode}; choose a compatible provider, or select an agent/model route with agentRuntime.id "openclaw"`,
   );
   return false;
 }
@@ -362,7 +361,7 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
           agentId: target.target.agentId,
           executionMode,
           ...dispatchTarget,
-          ...(dispatchTarget.deviceId && devicePlacement ? { devicePlacement } : {}),
+          ...(devicePlacement ? { devicePlacement } : {}),
         },
         () =>
           emitSessionsChanged(context, {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getRuntimeConfig } from "../../config/config.js";
+import { resolveNodeCommandAllowlist } from "../node-command-policy.js";
 import { resolveDevicePlacementEligibility } from "./device-placement-eligibility.js";
 import {
   createPlacementFailureActions,
@@ -13,6 +14,7 @@ import { createPlacementRecoveryActions } from "./placement-dispatch-recovery.js
 import {
   createWorkerPlacementDispatchStartup,
   type WorkerDevicePlacementRequirementResolver,
+  type WorkerNodePlacementAuthority,
   type WorkerPlacementRecoveryBarrier,
 } from "./placement-dispatch-startup.js";
 import { createWorkerPlacementMoveAbandonment } from "./placement-move-abandon.js";
@@ -35,6 +37,7 @@ import type {
   WorkerPlacementReclaimRequest,
 } from "./service-contract.js";
 import { deriveEnvironmentIntent } from "./service-contract.js";
+import type { WorkerEnvironmentService } from "./service.js";
 import { isFailedWorkerPlacementEnvironmentGone } from "./session-placement-lifecycle.js";
 import { WorkerTunnelOwnerDisconnectedError } from "./tunnel-contract.js";
 import type { WorkerWorkspaceResultConflict } from "./workspace-conflicts.js";
@@ -90,7 +93,8 @@ export type WorkerPlacementReclaimBarriers = {
 
 type WorkerPlacementDispatchOptions = WorkerPlacementReclaimBarriers & {
   placements: WorkerDispatchPlacementStore;
-  environments: WorkerDispatchEnvironmentService;
+  environments: WorkerDispatchEnvironmentService &
+    Partial<Pick<WorkerEnvironmentService, "requiresNodeEnrollment">>;
   runnerAvailability: WorkerPlacementRunnerAvailabilityReader;
   runLocalBarrier: WorkerLocalDispatchBarrier;
   runRecoveryBarrier: WorkerPlacementRecoveryBarrier;
@@ -127,6 +131,7 @@ type WorkerPlacementDispatchOptions = WorkerPlacementReclaimBarriers & {
   ) => Promise<void>;
   resolveGitAuthor?: (agentId: string) => { name?: string; email?: string } | undefined;
   resolveDevicePlacementRequirement?: WorkerDevicePlacementRequirementResolver;
+  isCurrentNodePlacement?: WorkerNodePlacementAuthority;
 };
 
 function isExactAttachedEnvironment(
@@ -168,6 +173,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
     onActivated: options.onActivated,
     resolveGitAuthor: options.resolveGitAuthor,
     resolveDevicePlacementRequirement: options.resolveDevicePlacementRequirement,
+    isCurrentNodePlacement: options.isCurrentNodePlacement,
     reportTransition,
   });
 
@@ -226,6 +232,24 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
           return placement;
         },
       });
+      if (
+        !request.deviceId &&
+        request.devicePlacement?.requiredNodeCommands.length &&
+        environments.requiresNodeEnrollment?.(
+          request.profileId,
+          request.inheritedProfile?.providerId,
+        )
+      ) {
+        const allowlist = resolveNodeCommandAllowlist(getRuntimeConfig());
+        const deniedCommand = request.devicePlacement.requiredNodeCommands.find(
+          (command) => !allowlist.has(command),
+        );
+        if (deniedCommand) {
+          throw new Error(
+            `cloud worker node command ${deniedCommand} is not enabled; add it to gateway.nodes.commands.allow and approve the command on the node`,
+          );
+        }
+      }
       await validateDevicePlacement();
       const localPath = await options.resolveWorkspacePath(request);
       // Workspace preparation yields; fence the current paired node again before durable provision.
