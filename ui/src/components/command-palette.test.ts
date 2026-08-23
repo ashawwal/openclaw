@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionsSearchResult } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { SessionsListResult } from "../api/types.ts";
@@ -26,14 +27,17 @@ type GatewayHarness = {
   setConnected: (connected: boolean) => void;
 };
 
-function createGateway(connected: boolean): GatewayHarness {
-  const client = {} as GatewayBrowserClient;
+function createGateway(
+  connected: boolean,
+  options: { methods?: string[]; request?: GatewayBrowserClient["request"] } = {},
+): GatewayHarness {
+  const client = { request: options.request } as GatewayBrowserClient;
   let snapshot: ApplicationGatewaySnapshot = {
     client,
     phase: connected ? "connected" : "reconnecting",
     offlineStable: false,
     canvasPluginSurfaceUrl: null,
-    hello: null,
+    hello: options.methods ? ({ features: { methods: options.methods } } as never) : null,
     assistantAgentId: "main",
     sessionKey: "main",
     lastError: null,
@@ -79,6 +83,7 @@ function createContext(
     gateway,
     sessions: {
       list,
+      state: { result: null },
     },
   } as unknown as ApplicationContext<RouteId>;
 }
@@ -136,7 +141,7 @@ describe("CommandPalette lifecycle", () => {
     const list = vi.fn(async () => createSessionResult("agent:main:old", "Old chat"));
     const { palette, provider } = await mountPalette(createContext(gateway, list));
     await enterQuery(palette, "old");
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(50);
     await palette.updateComplete;
     expect(palette.textContent).toContain("Old chat");
 
@@ -165,7 +170,7 @@ describe("CommandPalette lifecycle", () => {
       .mockResolvedValueOnce(createSessionResult("agent:main:retry", "Retry chat"));
     const { palette } = await mountPalette(createContext(harness.gateway, list));
     await enterQuery(palette, "retry");
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(50);
     expect(list).toHaveBeenCalledOnce();
 
     harness.setConnected(false);
@@ -175,7 +180,7 @@ describe("CommandPalette lifecycle", () => {
 
     harness.setConnected(true);
     await palette.updateComplete;
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(50);
     await palette.updateComplete;
 
     expect(list).toHaveBeenCalledTimes(2);
@@ -193,18 +198,135 @@ describe("CommandPalette lifecycle", () => {
     );
     const { palette, provider } = await mountPalette(createContext(initial.gateway, initialList));
     await enterQuery(palette, "chat");
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(50);
     expect(initialList).toHaveBeenCalledOnce();
 
     stale.resolve(createSessionResult("agent:main:stale", "Stale chat"));
     provider.setContext(createContext(replacement.gateway, replacementList));
     await palette.updateComplete;
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(50);
     await palette.updateComplete;
 
     expect(replacementList).toHaveBeenCalledOnce();
     expect(palette.textContent).toContain("Fresh chat");
     expect(palette.textContent).not.toContain("Stale chat");
+  });
+
+  it("merges full-context matches after metadata matches without adding another search field", async () => {
+    const metadata = createSessionResult("agent:main:metadata", "needle");
+    const contextOnly = createSessionResult("agent:main:context", "Unrelated title");
+    const roster = {
+      ...metadata,
+      count: 2,
+      totalCount: 2,
+      sessions: [...metadata.sessions, ...contextOnly.sessions],
+    } as SessionsListResult;
+    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
+      options?.search ? metadata : roster,
+    );
+    const searchResult: SessionsSearchResult = {
+      results: [
+        {
+          sessionKey: "agent:main:context",
+          sessionId: "context",
+          messageId: "message-context",
+          role: "assistant",
+          timestamp: 42,
+          snippet: "The needle appears only in the conversation body.",
+          score: 10,
+        },
+      ],
+    };
+    const request = vi.fn(async () => searchResult);
+    const { gateway } = createGateway(true, {
+      methods: ["sessions.search"],
+      request: request as GatewayBrowserClient["request"],
+    });
+    const { palette } = await mountPalette(createContext(gateway, list));
+
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await palette.updateComplete;
+
+    expect(request).toHaveBeenCalledWith("sessions.search", {
+      agentId: "main",
+      sessionKeys: ["agent:main:metadata", "agent:main:context"],
+      query: "needle",
+      limit: 25,
+    });
+    const chatItems = [...palette.querySelectorAll<HTMLElement>(".cmd-palette__item")];
+    expect(chatItems).toHaveLength(2);
+    expect(chatItems[0]?.textContent).toContain("needle");
+    expect(chatItems[1]?.textContent).toContain("Unrelated title");
+    expect(chatItems[1]?.textContent).toContain("needle appears only in the conversation body");
+    expect(palette.querySelectorAll(".cmd-palette__input")).toHaveLength(1);
+  });
+
+  it("waits for two characters before searching sessions", async () => {
+    const { gateway } = createGateway(true, { methods: ["sessions.search"] });
+    const list = vi.fn(async () => createSessionResult("agent:main:test", "Test"));
+    const { palette } = await mountPalette(createContext(gateway, list));
+
+    await enterQuery(palette, "n");
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("keeps bounded metadata pagination when transcript search is unavailable", async () => {
+    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) => {
+      const offset = options?.offset ?? 0;
+      return {
+        ...createSessionResult(`agent:main:hidden-${offset}`, `Hidden ${offset}`),
+        totalCount: 250,
+        hasMore: true,
+        nextOffset: offset + 50,
+        sessions: [
+          {
+            key: `agent:main:hidden-${offset}`,
+            kind: "direct",
+            displayName: `Hidden ${offset}`,
+            spawnedBy: "agent:main:main",
+            updatedAt: 1,
+          },
+        ],
+      } as SessionsListResult;
+    });
+    const { gateway } = createGateway(true);
+    const { palette } = await mountPalette(createContext(gateway, list));
+
+    await enterQuery(palette, "hidden");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(4));
+
+    expect(list.mock.calls.map(([options]) => options?.offset ?? 0)).toEqual([0, 50, 100, 150]);
+  });
+
+  it("matches category metadata from the full visible roster", async () => {
+    const categorized = createSessionResult("agent:main:categorized", "Unrelated title");
+    const categorizedRow = categorized.sessions.at(0);
+    if (!categorizedRow) {
+      throw new Error("Expected categorized session fixture");
+    }
+    categorized.sessions[0] = { ...categorizedRow, category: "Tak" };
+    const empty = { ...categorized, count: 0, sessions: [] } as SessionsListResult;
+    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
+      options?.search ? empty : categorized,
+    );
+    const request = vi.fn(async () => ({ results: [] }) satisfies SessionsSearchResult);
+    const { gateway } = createGateway(true, {
+      methods: ["sessions.search"],
+      request: request as GatewayBrowserClient["request"],
+    });
+    const { palette } = await mountPalette(createContext(gateway, list));
+
+    await enterQuery(palette, "tak");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await palette.updateComplete;
+
+    expect(palette.textContent).toContain("Unrelated title");
   });
 
   it("shows a search failure instead of a false empty result", async () => {
@@ -217,7 +339,7 @@ describe("CommandPalette lifecycle", () => {
     // The query matches no navigation item, so a swallowed search failure
     // would render the plain "No results" empty state.
     await enterQuery(palette, "zzz-unmatched");
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(50);
     await palette.updateComplete;
 
     expect(list).toHaveBeenCalledOnce();
@@ -228,7 +350,7 @@ describe("CommandPalette lifecycle", () => {
     await enterQuery(palette, "zz");
     await palette.updateComplete;
     expect(palette.textContent).not.toContain("Chat search failed");
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(50);
     await palette.updateComplete;
     expect(palette.textContent).toContain("Recovered chat");
   });

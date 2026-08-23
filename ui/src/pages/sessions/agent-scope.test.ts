@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
-import { searchVisibleSessionTranscripts } from "./agent-scope.ts";
+import { searchVisibleSessionTranscripts } from "../../lib/sessions/transcript-search.ts";
 
 describe("searchVisibleSessionTranscripts", () => {
   it("batches every visible session within the protocol key limit", async () => {
