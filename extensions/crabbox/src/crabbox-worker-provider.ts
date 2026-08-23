@@ -49,6 +49,8 @@ import {
   CRABBOX_WARMUP_TIMEOUT_MS,
   resolveCrabboxProvisionBaseTimeoutMs,
   resolveCrabboxProvisionCallTimeoutMs,
+  CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS,
+  CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS,
 } from "./crabbox-worker-timeouts.js";
 import { loadCrabboxWorkerWallpaperBase64 } from "./crabbox-worker-wallpaper.js";
 
@@ -529,7 +531,13 @@ export function createCrabboxWorkerProvider(
     provisionBeforeInstallation: true,
     requiresNodeEnrollment: true,
     resolveProvisionTimeoutMs(profile) {
-      return resolveCrabboxProvisionCallTimeoutMs(parseCrabboxProfile(profile));
+      const parsed = parseCrabboxProfile(profile);
+      return (
+        resolveCrabboxProvisionCallTimeoutMs(parsed) +
+        (parsed.provider === "machine0"
+          ? CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS - resolveCrabboxProvisionBaseTimeoutMs(parsed)
+          : 0)
+      );
     },
     async provision(
       profile: WorkerProfile,
@@ -544,6 +552,7 @@ export function createCrabboxWorkerProvider(
         );
       }
       const parsed = requestedClass ? { ...configured, class: requestedClass } : configured;
+      const isMachine0Provider = parsed.provider === "machine0";
       const warmupTimeoutMs = parsed.desktop
         ? CRABBOX_DESKTOP_WARMUP_TIMEOUT_MS
         : CRABBOX_WARMUP_TIMEOUT_MS;
@@ -560,6 +569,12 @@ export function createCrabboxWorkerProvider(
           "Legacy Crabbox provision state cannot be replayed safely; clean up any prior lease and dispatch again",
         );
       }
+      const provisionDeadline = isMachine0Provider
+        ? Date.now() + CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS
+        : deadline;
+      const provisionWarmupTimeoutMs = isMachine0Provider
+        ? CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS
+        : warmupTimeoutMs;
       const binary = resolveBinary(parsed.binary);
       const context = { binary, provider: parsed.provider };
       const leaseId = operationLeaseId(operationId);
@@ -587,7 +602,7 @@ export function createCrabboxWorkerProvider(
         args: buildCrabboxWarmupArgs(parsed, leaseId, slug),
         binary,
         runCommand,
-        timeoutMs: remainingProvisionTimeout(deadline, warmupTimeoutMs),
+        timeoutMs: remainingProvisionTimeout(provisionDeadline, provisionWarmupTimeoutMs),
       });
       if (warmup.termination !== "exit" || warmup.code !== 0) {
         const profileError = provisionProfileError(warmup);
@@ -603,7 +618,7 @@ export function createCrabboxWorkerProvider(
           expectedLeaseId: leaseId,
           id: leaseId,
           runCommand,
-          timeoutMs: remainingProvisionTimeout(deadline, CRABBOX_LIFECYCLE_TIMEOUT_MS),
+          timeoutMs: remainingProvisionTimeout(provisionDeadline, CRABBOX_LIFECYCLE_TIMEOUT_MS),
         });
       } catch (error) {
         // Transport failure after warmup is indeterminate; preserve the lease for durable replay.
@@ -620,7 +635,7 @@ export function createCrabboxWorkerProvider(
       }
       const inspectedParams = {
         binary,
-        deadline,
+        deadline: provisionDeadline,
         inspect: inspected.inspect,
         profile: parsed,
         provider: parsed.provider,
@@ -633,7 +648,7 @@ export function createCrabboxWorkerProvider(
         );
       }
       inspectedParams.inspect = await waitForProvisionReady({ ...inspectedParams, sleep });
-      inspectedParams.deadline = setupDeadline;
+      inspectedParams.deadline = provisionDeadline + (setupDeadline - deadline);
       if (parsed.setup) {
         inspectedParams.inspect = await runProvisionSetupAndWaitReady({
           ...inspectedParams,
