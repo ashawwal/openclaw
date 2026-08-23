@@ -888,7 +888,7 @@ describe("Crabbox worker provider", () => {
   it("cleans a committed fixed lease before making an AWS profile rejection permanent", async () => {
     const calls: string[][] = [];
     let creates = 0;
-    let inspectTimeout = true;
+    let loseWarmupReply = true;
     let profileRejected = false;
     let live = false;
     const runCommand: CrabboxCommandRunner = async (argv) => {
@@ -905,13 +905,13 @@ describe("Crabbox worker provider", () => {
           creates += 1;
           live = true;
         }
+        if (loseWarmupReply) {
+          loseWarmupReply = false;
+          return commandResult({ code: null, killed: true, termination: "timeout" });
+        }
         return commandResult();
       }
       if (argv[1] === "inspect") {
-        if (inspectTimeout) {
-          inspectTimeout = false;
-          return commandResult({ code: null, killed: true, termination: "timeout" });
-        }
         return commandResult({ stdout: inspectJson({ sshHostKey: HOST_KEY }) });
       }
       if (argv[1] === "stop") {
@@ -923,7 +923,7 @@ describe("Crabbox worker provider", () => {
 
     await expect(
       providerWithRawRunner(runCommand).provision(PROFILE, OPERATION_ID),
-    ).rejects.toThrow("inspect did not exit normally (timeout)");
+    ).rejects.toThrow("warmup did not exit normally (timeout)");
     expect(live).toBe(true);
     profileRejected = true;
 
@@ -935,14 +935,7 @@ describe("Crabbox worker provider", () => {
     });
     expect(creates).toBe(1);
     expect(live).toBe(false);
-    expect(calls.map((argv) => argv[1])).toEqual([
-      "config",
-      "warmup",
-      "inspect",
-      "config",
-      "inspect",
-      "stop",
-    ]);
+    expect(calls.map((argv) => argv[1])).toEqual(["config", "warmup", "config", "inspect", "stop"]);
     expect(calls.at(-1)).toEqual([SIBLING_BINARY, "stop", "--provider", "aws", "--id", LEASE_ID]);
   });
 
@@ -1786,7 +1779,7 @@ describe("Crabbox worker provider", () => {
     expect(calls.at(-1)).toEqual([SIBLING_BINARY, "stop", "--provider", "aws", "--id", LEASE_ID]);
   });
 
-  it("keeps a committed lease live after inspect timeout and adopts it on replay", async () => {
+  it("stops a committed fixed lease after inspect timeout without provisioning replay", async () => {
     const calls: string[][] = [];
     const live = new Set<string>();
     let creates = 0;
@@ -1822,26 +1815,10 @@ describe("Crabbox worker provider", () => {
     await expect(providerWithRunner(runCommand).provision(PROFILE, OPERATION_ID)).rejects.toThrow(
       "did not exit normally (timeout)",
     );
-    expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect"]);
-    expect(live).toEqual(new Set([LEASE_ID]));
-
-    const restarted = providerWithRunner(runCommand);
-    const lease = await restarted.provision(PROFILE, OPERATION_ID);
-    expect(lease.leaseId).toBe(LEASE_ID);
     expect(creates).toBe(1);
-    expect(live).toEqual(new Set([LEASE_ID]));
-
-    await restarted.destroy({ leaseId: lease.leaseId, profile: PROFILE });
     expect(live.size).toBe(0);
-    expect(calls.map((argv) => argv[1])).toEqual([
-      "warmup",
-      "inspect",
-      "warmup",
-      "inspect",
-      "run",
-      "inspect",
-      "stop",
-    ]);
+    expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect", "stop"]);
+    expect(calls.at(-1)).toEqual([SIBLING_BINARY, "stop", "--provider", "aws", "--id", LEASE_ID]);
   });
 
   it.each([
@@ -1857,15 +1834,12 @@ describe("Crabbox worker provider", () => {
       async (): Promise<SpawnResult> => commandResult({ code: 1, stderr: "provider unavailable" }),
       "Crabbox inspect failed with exit code 1",
     ],
-  ])("leaves the fixed lease live after transient %s", async (_name, failure, message) => {
+  ])("stops the exact fixed lease after transient %s", async (_name, failure, message) => {
     const calls: string[][] = [];
     const provider = providerWithRunner(async (argv) => {
       calls.push(argv);
       if (argv[1] === "inspect") {
         return await failure();
-      }
-      if (argv[1] === "stop") {
-        throw new Error("transient inspection must not stop the lease");
       }
       return commandResult();
     });
@@ -1874,8 +1848,54 @@ describe("Crabbox worker provider", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error).toMatchObject({ message: expect.stringContaining(message) });
     expect(error).not.toMatchObject({ code: "invalid_profile" });
-    expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect"]);
+    expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect", "stop"]);
+    expect(calls.at(-1)).toEqual([SIBLING_BINARY, "stop", "--provider", "aws", "--id", LEASE_ID]);
   });
+
+  it.each(["initial inspection", "readiness polling"] as const)(
+    "preserves the exact lease and both failures when %s cleanup is indeterminate",
+    async (failurePoint) => {
+      const calls: string[][] = [];
+      let inspections = 0;
+      const provider = providerWithRunner(async (argv) => {
+        calls.push(argv);
+        if (argv[1] === "inspect") {
+          inspections += 1;
+          if (failurePoint === "readiness polling" && inspections === 1) {
+            return commandResult({ stdout: inspectJson({ ready: false }) });
+          }
+          return commandResult({ code: 1, stderr: `${failurePoint} failed` });
+        }
+        if (argv[1] === "stop") {
+          return commandResult({ code: null, killed: true, termination: "timeout" });
+        }
+        return commandResult();
+      });
+
+      const error = await provider
+        .provision(PROFILE, OPERATION_ID)
+        .catch((cause: unknown) => cause);
+
+      expect(WorkerProviderError.isCleanupIndeterminate(error)).toBe(true);
+      if (!WorkerProviderError.isCleanupIndeterminate(error)) {
+        throw new Error("expected indeterminate worker cleanup error");
+      }
+      expect(error).toMatchObject({
+        code: "cleanup_indeterminate",
+        leaseId: LEASE_ID,
+        provisionError: { message: expect.stringContaining(`${failurePoint} failed`) },
+        cleanupError: { message: expect.stringContaining("stop did not exit normally (timeout)") },
+      });
+      expect(error.errors).toEqual([error.provisionError, error.cleanupError]);
+      expect(calls.map((argv) => argv[1])).toEqual([
+        "warmup",
+        "inspect",
+        ...(failurePoint === "readiness polling" ? ["inspect"] : []),
+        "stop",
+      ]);
+      expect(calls.at(-1)).toEqual([SIBLING_BINARY, "stop", "--provider", "aws", "--id", LEASE_ID]);
+    },
+  );
 
   it("keeps authoritative absence after warmup retryable and un-stopped", async () => {
     const calls: string[][] = [];
@@ -1978,10 +1998,10 @@ describe("Crabbox worker provider", () => {
     } finally {
       now.mockRestore();
     }
-    expect(calls.map((argv) => argv[1])).toEqual(["config", "warmup", "inspect"]);
+    expect(calls.map((argv) => argv[1])).toEqual(["config", "warmup", "inspect", "stop"]);
   });
 
-  it("leaves the fixed lease live when readiness polling fails transiently", async () => {
+  it("stops the exact fixed lease when readiness polling fails transiently", async () => {
     const calls: string[][] = [];
     let inspections = 0;
     const provider = providerWithRunner(async (argv) => {
@@ -1998,7 +2018,8 @@ describe("Crabbox worker provider", () => {
     await expect(provider.provision(PROFILE, OPERATION_ID)).rejects.toThrow(
       "readiness probe failed",
     );
-    expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect", "inspect"]);
+    expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect", "inspect", "stop"]);
+    expect(calls.at(-1)).toEqual([SIBLING_BINARY, "stop", "--provider", "aws", "--id", LEASE_ID]);
   });
 
   it.each([

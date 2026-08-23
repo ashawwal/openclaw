@@ -251,6 +251,7 @@ async function waitForProvisionReady(
   },
 ): Promise<ParsedInspect> {
   let inspect = params.inspect;
+  let authoritativeAbsence = false;
   const inspectAgain = async (): Promise<ParsedInspect> => {
     const replay = await inspectWithContext({
       context: { binary: params.binary, provider: params.provider },
@@ -260,6 +261,7 @@ async function waitForProvisionReady(
       timeoutMs: remainingProvisionTimeout(params.deadline, CRABBOX_LIFECYCLE_TIMEOUT_MS),
     });
     if (replay.status === "unknown") {
+      authoritativeAbsence = true;
       throw new Error("Crabbox operation lease disappeared while waiting for SSH readiness");
     }
     return replay.inspect;
@@ -281,10 +283,10 @@ async function waitForProvisionReady(
     }
     return inspect;
   } catch (error) {
-    if (error instanceof WorkerProviderError) {
-      return await failProvisionAfterCleanup({ ...params, id: inspect.id }, error);
+    if (authoritativeAbsence) {
+      throw error;
     }
-    throw error;
+    return await failProvisionAfterCleanup({ ...params, id: inspect.id }, error);
   }
 }
 
@@ -621,14 +623,11 @@ export function createCrabboxWorkerProvider(
           timeoutMs: remainingProvisionTimeout(provisionDeadline, CRABBOX_LIFECYCLE_TIMEOUT_MS),
         });
       } catch (error) {
-        // Transport failure after warmup is indeterminate; preserve the lease for durable replay.
-        if (error instanceof WorkerProviderError) {
-          return await failProvisionAfterCleanup(
-            { binary, id: leaseId, provider: parsed.provider, runCommand },
-            error,
-          );
-        }
-        throw error;
+        // Warmup established the exact lease; cleanup failure must hand that identity to core.
+        return await failProvisionAfterCleanup(
+          { binary, id: leaseId, provider: parsed.provider, runCommand },
+          error,
+        );
       }
       if (inspected.status === "unknown") {
         throw new Error("Crabbox warmup lease was not found during inspection");
