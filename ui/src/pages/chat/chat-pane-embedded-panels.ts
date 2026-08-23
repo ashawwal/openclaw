@@ -152,14 +152,9 @@ export function sidebarPanelDefinitions(
         .onStateChange=${params.discussion.onStateChange}
       ></openclaw-session-discussion>`
     : null;
-  const attachmentContent = state?.sidebarContent?.kind === "attachment" ? state.sidebarContent : null;
   const detailContent =
-    (state?.sidebarContent?.kind === "attachment" ? null : state?.sidebarContent) ??
+    state?.sidebarContent ??
     (state && params?.detailOpen ? resolveSessionDiffSidebarContent(state) : null);
-  const workspaceContent =
-    attachmentContent && params
-      ? params.renderDetail(attachmentContent)
-      : (params?.workspace ?? null);
   return [
     definePanel(
       "detail",
@@ -172,7 +167,7 @@ export function sidebarPanelDefinitions(
       shortcut: "Ctrl+`",
     }),
     definePanel("browser", "browser", icons.globe, browser, { available: browserAvailable }),
-    definePanel("workspace", "files", icons.fileText, workspaceContent, {
+    definePanel("workspace", "files", icons.fileText, params?.workspace ?? null, {
       shortcut: "⇧⌘B",
     }),
     definePanel(
