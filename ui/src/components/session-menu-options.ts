@@ -1,10 +1,19 @@
-import { html, nothing } from "lit";
+import { html, nothing, type TemplateResult } from "lit";
 import { ref } from "lit/directives/ref.js";
+import type { SessionPinScope } from "../../../packages/gateway-protocol/src/index.ts";
 import { t } from "../i18n/index.ts";
 import { EDITOR_IDS, EDITOR_LABELS } from "../lib/editor-links.ts";
 import { icons } from "./icons.ts";
 import { menuShortcutHint } from "./menu-shortcuts.ts";
 import { syncDropdownItemRadio } from "./web-awesome.ts";
+
+export function sessionPinScopeFromMenuValue(value: string): SessionPinScope | null | undefined {
+  if (!value.startsWith("pin-scope:")) {
+    return undefined;
+  }
+  const scope = value.slice("pin-scope:".length);
+  return scope === "global" || scope === "group" ? scope : scope === "none" ? null : undefined;
+}
 
 export function renderSessionEditorOptions(params: { inline: boolean; disabled: boolean }) {
   return html`
@@ -20,6 +29,45 @@ export function renderSessionEditorOptions(params: { inline: boolean; disabled: 
         </wa-dropdown-item>
       `,
     )}
+  `;
+}
+
+export function renderSessionPinOptions(params: {
+  category: string | null;
+  scope: SessionPinScope | null;
+  disabled: boolean;
+  disabledReason?: string;
+}) {
+  const entry = (scope: SessionPinScope | null, label: string, icon: TemplateResult) => {
+    const checked = params.scope === scope;
+    const value = scope ?? "none";
+    return html`
+      <wa-dropdown-item
+        class="session-menu__item"
+        value=${`pin-scope:${value}`}
+        role="menuitemradio"
+        aria-checked=${String(checked)}
+        ${ref((element) => syncDropdownItemRadio(element, checked))}
+        ?disabled=${params.disabled}
+        title=${params.disabledReason ?? nothing}
+      >
+        <span slot="icon" class="session-menu__icon" aria-hidden="true">${icon}</span>
+        <span class="session-menu__text">${label}</span>
+        ${checked
+          ? html`<span slot="details" class="session-menu__check" aria-hidden="true"
+              >${icons.check}</span
+            >`
+          : nothing}
+      </wa-dropdown-item>
+    `;
+  };
+  return html`
+    <div class="session-menu__info">${t("sessionsView.pinSession")}</div>
+    ${params.category
+      ? entry("group", t("sessionsView.pinInGroup", { group: params.category }), icons.folder)
+      : nothing}
+    ${entry("global", t("sessionsView.pinAcrossGroups"), icons.globe)}
+    ${entry(null, t("sessionsView.notPinned"), icons.pinOff)}
   `;
 }
 

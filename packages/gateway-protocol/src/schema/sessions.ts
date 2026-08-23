@@ -26,6 +26,7 @@ export {
 export { SessionsResolveParamsSchema, type SessionsResolveParams } from "./sessions-resolve.js";
 export {
   SESSIONS_PATCH_MANY_MAX_TARGETS,
+  SessionPinScopeSchema,
   SessionsPatchManyParamsSchema,
   SessionsPatchManyResultSchema,
   SessionsPatchManyTargetSchema,
@@ -36,6 +37,7 @@ export {
   type SessionsPatchManyTarget,
   type SessionsPatchMutation,
   type SessionsPatchParams,
+  type SessionPinScope,
 } from "./sessions-patch.js";
 export {
   SessionCreatedActorSchema,

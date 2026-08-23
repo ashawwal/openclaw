@@ -159,7 +159,10 @@ export function renderRecentSession(params: {
   const { host, session, display, listItem = true } = params;
   const pinAccess = host.readSessionMutationAccess({
     method: "sessions.patch",
-    params: { key: session.key, pinned: !session.pinned },
+    params: {
+      key: session.key,
+      pinScope: session.pinScope ? null : session.category ? "group" : "global",
+    },
   });
   const label = display?.label ?? session.label;
   const { subtitle, narration } = resolveSidebarSessionSubtitle({

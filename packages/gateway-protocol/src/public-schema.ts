@@ -264,6 +264,7 @@ export {
   SessionsSendParamsSchema,
   SessionsAbortParamsSchema,
   SESSIONS_PATCH_MANY_MAX_TARGETS,
+  SessionPinScopeSchema,
   SessionsPatchParamsSchema,
   SessionsPatchMutationSchema,
   SessionsPatchManyTargetSchema,

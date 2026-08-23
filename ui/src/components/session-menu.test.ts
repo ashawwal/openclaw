@@ -10,7 +10,7 @@ type SessionMenuData = {
   label: string;
   sessionId: string | null;
   isChild: boolean;
-  pinned: boolean;
+  pinScope: "global" | "group" | null;
   unread: boolean;
   archived: boolean;
   category: string | null;
@@ -64,7 +64,7 @@ async function mountMenu(
     label: "Test session",
     sessionId: "session-123",
     isChild: false,
-    pinned: false,
+    pinScope: null,
     unread: false,
     archived: false,
     category: null,
@@ -199,7 +199,7 @@ describe("session menu", () => {
       onAction,
       actionDisabledReasons: {
         delete: "This action requires operator.admin access.",
-        "toggle-pin": "This action requires operator.write access.",
+        "set-pin-scope": "This action requires operator.write access.",
       },
     });
     const pin = menuItem(menu, "Pin session");
@@ -388,16 +388,30 @@ describe("session menu", () => {
     expect(menuItem(menu, "Delete 2…").disabled).toBe(true);
   });
 
-  it("closes before dispatching Pin", async () => {
-    const calls: string[] = [];
+  it("drills into pin scope and dispatches the selected group pin", async () => {
+    const calls: Array<string | SessionMenuAction> = [];
     const menu = await mountMenu({
+      session: { category: "Research", pinScope: "global" },
       onClose: () => calls.push("close"),
-      onAction: (action) => calls.push(action.kind),
+      onAction: (action) => calls.push(action),
     });
 
-    menuItem(menu, "Pin session").click();
+    selectMenuValue(menu, "compact:open-pin");
+    await menu.updateComplete;
+    expect(menuItemLabels(menu)).toEqual([
+      "Back",
+      "In Research",
+      "Across all groups",
+      "Not pinned",
+    ]);
+    const globalPin = menuItem(menu, "Across all groups");
+    await globalPin.updateComplete;
+    await Promise.resolve();
+    expect(globalPin.getAttribute("aria-checked")).toBe("true");
 
-    expect(calls).toEqual(["close", "toggle-pin"]);
+    selectMenuValue(menu, "pin-scope:group");
+
+    expect(calls).toEqual(["close", { kind: "set-pin-scope", scope: "group" }]);
   });
 
   it("dispatches Copy session ID and exposes a keyboard shortcut", async () => {
@@ -762,7 +776,6 @@ describe("session menu", () => {
     });
 
     const pin = menuItem(menu, "Pin session");
-    expect(pin.querySelector(".session-menu__shortcut")?.textContent).toBe("P");
     expect(pin.getAttribute("aria-keyshortcuts")).toBe("P");
     expect(menuItem(menu, "Move to group").dataset.shortcut).toBeUndefined();
 
@@ -773,8 +786,26 @@ describe("session menu", () => {
       cancelable: true,
     });
     document.dispatchEvent(keydown);
-    expect(calls).toEqual(["close", "toggle-pin"]);
+    await menu.updateComplete;
+    expect(menuItemLabels(menu)).toEqual(["Back", "Across all groups", "Not pinned"]);
+    expect(calls).toEqual([]);
     expect(keydown.defaultPrevented).toBe(true);
+  });
+
+  it("returns from pin scope on Escape before closing the root menu", async () => {
+    const onClose = vi.fn();
+    const menu = await mountMenu({ session: { category: "Research" }, onClose });
+    selectMenuValue(menu, "compact:open-pin");
+    await menu.updateComplete;
+
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    await menu.updateComplete;
+
+    expect(menuItemLabels(menu)).toContain("Pin session");
+    expect(document.activeElement).toBe(menuItem(menu, "Pin session"));
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("ignores shortcut keys for disabled items and modified keystrokes", async () => {

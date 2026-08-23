@@ -142,7 +142,7 @@ describe("AppSidebar session mutation feedback", () => {
     expect(harness.patch).toHaveBeenNthCalledWith(
       3,
       archivedRow.key,
-      { pinned: true },
+      { pinScope: "global" },
       { agentId: "main", deferListRefresh: true },
     );
     expect(harness.patchMany).not.toHaveBeenCalled();
@@ -412,6 +412,8 @@ describe("AppSidebar session mutation feedback", () => {
     harness.patch.mockImplementationOnce(() => pending.promise);
     const menu = await openSessionMenu(sidebar, "agent:main:a");
     menu.querySelector<HTMLButtonElement>('[data-shortcut="p"]')?.click();
+    await menu.updateComplete;
+    menu.querySelector<HTMLElement>('wa-dropdown-item[value="pin-scope:global"]')?.click();
     await waitForFast(() => expect(harness.patch).toHaveBeenCalledOnce());
 
     gateway.publish({ phase: "reconnecting" });

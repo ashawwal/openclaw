@@ -130,7 +130,7 @@ describe("sessions page lifecycle", () => {
     expect(patch).toHaveBeenNthCalledWith(
       2,
       key,
-      { archived: false, pinned: true },
+      { archived: false, pinScope: "global" },
       { agentId: undefined, expectedSessionId: "session-pinned" },
     );
   });

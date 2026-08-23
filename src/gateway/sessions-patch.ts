@@ -78,6 +78,7 @@ import {
   snapshotAgentModelFallback,
 } from "./session-model-patch-origin.js";
 import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
+import { applySessionsPatchPinState } from "./sessions-patch-pin-state.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
 
 function invalid(message: string): { ok: false; error: ErrorShape } {
@@ -262,6 +263,7 @@ export async function projectSessionsPatchEntry(params: {
   if (existing && !existing.sessionId) {
     delete next.label;
     delete next.category;
+    delete next.categoryPinnedAt;
     delete next.displayName;
   }
 
@@ -310,6 +312,7 @@ export async function projectSessionsPatchEntry(params: {
     const raw = patch.category;
     if (raw === null) {
       delete next.category;
+      delete next.categoryPinnedAt;
     } else if (raw !== undefined) {
       // Categories are shared organization buckets, so duplicates are expected (unlike labels).
       const trimmed = normalizeOptionalString(raw) ?? "";
@@ -377,21 +380,16 @@ export async function projectSessionsPatchEntry(params: {
         }
       }
       delete next.pinnedAt;
+      delete next.categoryPinnedAt;
     } else {
       delete next.archivedAt;
       delete next.archivedBy;
     }
   }
 
-  if ("pinned" in patch) {
-    if (patch.pinned === true) {
-      if (next.archivedAt !== undefined) {
-        return invalid("cannot pin an archived session; restore it first");
-      }
-      next.pinnedAt ??= now;
-    } else {
-      delete next.pinnedAt;
-    }
+  const pinStateError = applySessionsPatchPinState({ next, patch, now });
+  if (pinStateError) {
+    return invalid(pinStateError);
   }
 
   if ("unread" in patch) {

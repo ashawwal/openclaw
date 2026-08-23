@@ -44,6 +44,7 @@ export function sessionRow(
     category?: string;
     pinned?: boolean;
     pinnedAt?: number;
+    categoryPinnedAt?: number;
     hasActiveRun?: boolean;
     unread?: boolean;
     status?: string;

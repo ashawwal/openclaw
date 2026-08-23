@@ -704,11 +704,11 @@ suite.define(() => {
       await page.mouse.up();
       const unpinPatch = await waitForPatch(
         gateway,
-        (params) => params.key === "agent:main:pinned" && params.pinned === false,
+        (params) => params.key === "agent:main:pinned" && params.pinScope === null,
       );
       expect(requireRecord(unpinPatch.params)).toMatchObject({
         key: "agent:main:pinned",
-        pinned: false,
+        pinScope: null,
       });
       await expect.poll(() => pinnedEntry.count()).toBe(0);
       await expect.poll(() => chatsGroup.locator(".sidebar-recent-session").count()).toBe(1);
@@ -779,11 +779,11 @@ suite.define(() => {
 
       const pinPatch = await waitForPatch(
         gateway,
-        (params) => params.key === "agent:main:candidate" && params.pinned === true,
+        (params) => params.key === "agent:main:candidate" && params.pinScope === "global",
       );
       expect(requireRecord(pinPatch.params)).toMatchObject({
         key: "agent:main:candidate",
-        pinned: true,
+        pinScope: "global",
       });
       expect(requireRecord(pinPatch.params)).not.toHaveProperty("category");
       await expect
@@ -799,7 +799,10 @@ suite.define(() => {
         '[data-sidebar-entry="session:agent:main:candidate"] .sidebar-recent-session',
       );
       await pinnedCandidate.click({ button: "right" });
-      await page.getByRole("menuitem", { name: "Unpin session" }).waitFor();
+      await page.getByRole("menuitem", { name: "Pin session" }).click();
+      const globalPin = page.getByRole("menuitemradio", { name: "Across all groups" });
+      await globalPin.waitFor();
+      await expect.poll(() => globalPin.getAttribute("aria-checked")).toBe("true");
       expect(await page.getByRole("menuitem", { name: "Reset pinned items" }).count()).toBe(0);
       await captureUiProof(page, "sidebar-session-dropped-into-pinned.png");
     } finally {

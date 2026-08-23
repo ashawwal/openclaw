@@ -55,6 +55,15 @@ suite.define(() => {
       await captureUiProof(page, "mobile-sidebar-session-menu-after-root.png");
 
       expect(await page.locator("openclaw-session-menu [slot='submenu']").count()).toBe(0);
+      await page.getByRole("menuitem", { name: "Pin session" }).click();
+      await page.getByRole("menuitemradio", { name: "In Research" }).waitFor({ state: "visible" });
+      await page
+        .getByRole("menuitemradio", { name: "Across all groups" })
+        .waitFor({ state: "visible" });
+      expect(await page.locator("openclaw-session-menu [slot='submenu']").count()).toBe(0);
+      await captureUiProof(page, "mobile-sidebar-session-menu-after-pin-drilldown.png");
+      await page.getByRole("menuitem", { name: "Back" }).click();
+
       await page.getByRole("menuitem", { name: "Move to group" }).click();
       const back = page.getByRole("menuitem", { name: "Back" });
       await back.waitFor({ state: "visible" });

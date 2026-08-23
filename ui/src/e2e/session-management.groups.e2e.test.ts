@@ -297,11 +297,11 @@ suite.define(() => {
       await sidebarReleasePin.click();
       const pinPatch = await waitForPatch(
         gateway,
-        (params) => params.key === "agent:main:release" && params.pinned === false,
+        (params) => params.key === "agent:main:release" && params.pinScope === null,
       );
       expect(requireRecord(pinPatch.params)).toMatchObject({
         key: "agent:main:release",
-        pinned: false,
+        pinScope: null,
       });
 
       // Active rows can archive through the Gateway's stop-and-drain lifecycle,

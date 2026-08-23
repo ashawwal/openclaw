@@ -913,7 +913,7 @@ suite.define(() => {
       const patchRequest = await gateway.waitForRequest("sessions.patch");
       expect(requireRecord(patchRequest.params)).toMatchObject({
         key,
-        pinned: true,
+        pinScope: "global",
       });
       await expect
         .poll(async () => {
