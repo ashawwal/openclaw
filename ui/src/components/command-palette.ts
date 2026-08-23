@@ -354,7 +354,7 @@ function renderCommandPalette(props: CommandPaletteProps) {
         />
         <div id=${paletteListboxId} class="cmd-palette__results" role="listbox">
           ${props.sessionSearchPartial
-            ? html`<div class="cmd-palette__search-notice" role="status">
+            ? html`<div class="cmd-palette__empty" role="status">
                 ${t("palette.searchPartial")}
               </div>`
             : nothing}
