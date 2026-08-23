@@ -5285,6 +5285,12 @@ td.data-table-key-col {
   padding: 6px 0;
 }
 
+.cmd-palette__search-notice {
+  padding: 6px 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .cmd-palette__group-label {
   padding: 8px 18px 4px;
   color: var(--muted);

@@ -263,6 +263,74 @@ describe("CommandPalette lifecycle", () => {
     expect(palette.querySelectorAll(".cmd-palette__input")).toHaveLength(1);
   });
 
+  it("searches a bare default session key in the selected agent scope", async () => {
+    const roster = createSessionResult("main", "Default chat");
+    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
+      options?.search ? { ...roster, count: 0, sessions: [] } : roster,
+    );
+    const request = vi.fn(async () => ({
+      results: [
+        {
+          sessionKey: "main",
+          sessionId: "default",
+          messageId: "message-default",
+          role: "assistant" as const,
+          timestamp: 42,
+          snippet: "The needle is in the default chat body.",
+          score: 10,
+        },
+      ],
+    }));
+    const { gateway } = createGateway(true, {
+      methods: ["sessions.search"],
+      request: request as GatewayBrowserClient["request"],
+    });
+    const { palette } = await mountPalette(createContext(gateway, list));
+
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await palette.updateComplete;
+
+    expect(request).toHaveBeenCalledWith("sessions.search", {
+      agentId: "main",
+      sessionKeys: ["main"],
+      query: "needle",
+      limit: 25,
+    });
+    expect(palette.textContent).toContain("Default chat");
+    expect(palette.textContent).toContain("needle is in the default chat body");
+  });
+
+  it("keeps metadata matches selectable when transcript search fails", async () => {
+    const metadata = createSessionResult("agent:main:metadata", "Needle planning");
+    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async () => metadata);
+    const request = vi.fn(async () => {
+      throw new Error("transcript index unavailable");
+    });
+    const { gateway } = createGateway(true, {
+      methods: ["sessions.search"],
+      request: request as GatewayBrowserClient["request"],
+    });
+    const { palette } = await mountPalette(createContext(gateway, list));
+
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await palette.updateComplete;
+
+    const metadataItem = palette.querySelector<HTMLElement>(
+      "#cmd-palette-option-session-agent-main-metadata",
+    );
+    expect(metadataItem?.textContent).toContain("Needle planning");
+    metadataItem?.click();
+    expect(palette.onSelectSession).toHaveBeenCalledWith("agent:main:metadata");
+    expect(palette.textContent).toContain(
+      "Transcript search unavailable — showing chat titles and metadata",
+    );
+    expect(palette.textContent).not.toContain("Chat search failed");
+  });
+
   it("waits for two characters before searching sessions", async () => {
     const { gateway } = createGateway(true, { methods: ["sessions.search"] });
     const list = vi.fn(async () => createSessionResult("agent:main:test", "Test"));

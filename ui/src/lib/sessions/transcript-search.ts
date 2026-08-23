@@ -17,22 +17,63 @@ export async function searchVisibleSessionTranscripts(params: {
   resolveAgentId: (sessionKey: string) => string | undefined;
   isCurrent?: () => boolean;
   mapPageRows?: (rows: GatewaySessionRow[]) => GatewaySessionRow[];
+  maxListPages?: number;
+  maxSearchRequests?: number;
+  maxSessionKeys?: number;
 }): Promise<VisibleSessionTranscriptSearchResult> {
   const protocolKeyLimit = 200;
-  const sessions = await fetchPagedSessionRows({
-    initialResult: params.result,
-    list: (offset) =>
-      params.listSessions({
-        ...params.listOptions,
-        limit: protocolKeyLimit,
-        offset,
-      }),
-    isCurrent: params.isCurrent,
-    mapPageRows: params.mapPageRows,
-    missingResultError: "Unable to load all sessions for transcript search.",
-    stalledPaginationError: "Session pagination did not advance during transcript search.",
-  });
-  const visibleSessions = sessions ?? [];
+  const maxSessionKeys = params.maxSessionKeys;
+  let rosterTruncated = false;
+  const visibleSessions = maxSessionKeys
+    ? await (async () => {
+        const rowsByKey = new Map<string, GatewaySessionRow>();
+        const maxPages = Math.max(1, params.maxListPages ?? 1);
+        let offset = 0;
+        for (let page = 0; page < maxPages; page += 1) {
+          const result = await params.listSessions({
+            ...params.listOptions,
+            limit: protocolKeyLimit,
+            offset,
+          });
+          if (params.isCurrent && !params.isCurrent()) {
+            return [];
+          }
+          if (!result) {
+            throw new Error("Unable to load sessions for transcript search.");
+          }
+          const rows = params.mapPageRows?.(result.sessions) ?? result.sessions;
+          for (const row of rows) {
+            rowsByKey.set(row.key, row);
+            if (rowsByKey.size >= maxSessionKeys) {
+              rosterTruncated = true;
+              return [...rowsByKey.values()];
+            }
+          }
+          if (!result.hasMore) {
+            return [...rowsByKey.values()];
+          }
+          const nextOffset = result.nextOffset ?? offset + result.sessions.length;
+          if (nextOffset <= offset) {
+            throw new Error("Session pagination did not advance during transcript search.");
+          }
+          offset = nextOffset;
+        }
+        rosterTruncated = true;
+        return [...rowsByKey.values()];
+      })()
+    : ((await fetchPagedSessionRows({
+        initialResult: params.result,
+        list: (offset) =>
+          params.listSessions({
+            ...params.listOptions,
+            limit: protocolKeyLimit,
+            offset,
+          }),
+        isCurrent: params.isCurrent,
+        mapPageRows: params.mapPageRows,
+        missingResultError: "Unable to load all sessions for transcript search.",
+        stalledPaginationError: "Session pagination did not advance during transcript search.",
+      })) ?? []);
   const keysByAgent = new Map<string, string[]>();
   for (const row of visibleSessions) {
     const agentId = params.resolveAgentId(row.key);
@@ -44,8 +85,14 @@ export async function searchVisibleSessionTranscripts(params: {
     keysByAgent.set(agentId, keys);
   }
   const requests: Array<Promise<SessionsSearchResult>> = [];
+  const maxSearchRequests = params.maxSearchRequests ?? Number.POSITIVE_INFINITY;
+  let requestsTruncated = false;
   for (const [agentId, sessionKeys] of keysByAgent) {
     for (let index = 0; index < sessionKeys.length; index += protocolKeyLimit) {
+      if (requests.length >= maxSearchRequests) {
+        requestsTruncated = true;
+        break;
+      }
       requests.push(
         params.client.request<SessionsSearchResult>("sessions.search", {
           agentId,
@@ -54,6 +101,9 @@ export async function searchVisibleSessionTranscripts(params: {
           limit: 25,
         }),
       );
+    }
+    if (requestsTruncated) {
+      break;
     }
   }
   const pages = await Promise.all(requests);
@@ -66,6 +116,8 @@ export async function searchVisibleSessionTranscripts(params: {
     results,
     indexing: pages.some((page) => page.indexing === true),
     truncated:
+      rosterTruncated ||
+      requestsTruncated ||
       pages.some((page) => page.truncated === true) ||
       pages.reduce((total, page) => total + page.results.length, 0) > results.length,
   };

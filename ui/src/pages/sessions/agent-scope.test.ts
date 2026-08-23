@@ -84,6 +84,40 @@ describe("searchVisibleSessionTranscripts", () => {
     );
   });
 
+  it("bounds palette-style roster enumeration and transcript requests", async () => {
+    const request = vi.fn(async (_method: string, _params: unknown) => ({ results: [] }));
+    const firstPage = Array.from(
+      { length: 200 },
+      (_, index) => ({ key: `agent:main:session-${index}` }) as GatewaySessionRow,
+    );
+    const listSessions = vi.fn(async () => ({
+      count: firstPage.length,
+      totalCount: 10_000,
+      sessions: firstPage,
+      hasMore: true,
+      nextOffset: 200,
+    })) as unknown as (options: unknown) => Promise<SessionsListResult>;
+
+    const result = await searchVisibleSessionTranscripts({
+      client: { request } as unknown as GatewayBrowserClient,
+      query: "needle",
+      listSessions,
+      listOptions: {},
+      resolveAgentId: () => "main",
+      maxListPages: 4,
+      maxSearchRequests: 1,
+      maxSessionKeys: 200,
+    });
+
+    expect(listSessions).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledOnce();
+    expect(request.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ sessionKeys: firstPage.map((row) => row.key) }),
+    );
+    expect(result.sessions).toHaveLength(200);
+    expect(result.truncated).toBe(true);
+  });
+
   it("recovers a moving thread when a later page omits the authoritative total", async () => {
     const first = { key: "agent:main:first" } as GatewaySessionRow;
     const moved = { key: "agent:main:moved" } as GatewaySessionRow;

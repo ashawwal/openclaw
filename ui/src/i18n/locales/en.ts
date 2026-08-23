@@ -4330,6 +4330,7 @@ export const en: TranslationMap = {
     placeholder: "Search chats and commands…",
     noResults: "No results",
     searchFailed: "Chat search failed — check the gateway logs and retry",
+    searchPartial: "Transcript search unavailable — showing chat titles and metadata",
     categories: {
       search: "Search",
       navigation: "Navigation",

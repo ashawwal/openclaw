@@ -15,7 +15,10 @@ import { formatRelativeTimestamp } from "../lib/format.ts";
 import { isGatewayMethodAdvertised } from "../lib/gateway-methods.ts";
 import { resolveSessionDisplayName } from "../lib/session-display.ts";
 import { filterVisibleSessionRows, getVisibleSessionRows } from "../lib/sessions/index.ts";
-import { parseAgentSessionKey } from "../lib/sessions/session-key.ts";
+import {
+  parseAgentSessionKey,
+  resolveUiSelectedGlobalAgentId,
+} from "../lib/sessions/session-key.ts";
 import { searchVisibleSessionTranscripts } from "../lib/sessions/transcript-search.ts";
 import { OpenClawLightDomContentsElement } from "../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../lit/subscriptions-controller.ts";
@@ -46,6 +49,9 @@ const SESSION_SEARCH_MIN_CHARS = 2;
 const SESSION_SEARCH_LIMIT = 10;
 const SESSION_SEARCH_MAX_PAGES = 4;
 const SESSION_SEARCH_PAGE_SIZE = 50;
+const SESSION_TRANSCRIPT_MAX_LIST_PAGES = 4;
+const SESSION_TRANSCRIPT_MAX_REQUESTS = 4;
+const SESSION_TRANSCRIPT_MAX_SESSION_KEYS = 200;
 
 function getPaletteBaseItems(
   desktopAvailable: boolean,
@@ -154,6 +160,7 @@ type CommandPaletteProps = {
   activeIndex: number;
   sessionItems: readonly PaletteItem[];
   sessionSearchFailed: boolean;
+  sessionSearchPartial: boolean;
   onToggle: () => void;
   onQueryChange: (query: string) => void;
   onActiveIndexChange: (index: number) => void;
@@ -346,6 +353,11 @@ function renderCommandPalette(props: CommandPaletteProps) {
           }}
         />
         <div id=${paletteListboxId} class="cmd-palette__results" role="listbox">
+          ${props.sessionSearchPartial
+            ? html`<div class="cmd-palette__search-notice" role="status">
+                ${t("palette.searchPartial")}
+              </div>`
+            : nothing}
           ${grouped.length === 0
             ? html`<div class="cmd-palette__empty">
                 <span class="nav-item__icon" style="opacity:0.3;width:20px;height:20px"
@@ -411,6 +423,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
   @state() private activeIndex = 0;
   @state() private sessionItems: readonly PaletteItem[] = [];
   @state() private sessionSearchFailed = false;
+  @state() private sessionSearchPartial = false;
 
   private readonly subscriptions = new SubscriptionsController(this);
   private sessionSearchTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -501,6 +514,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
     this.sessionSearchId += 1;
     this.sessionItems = [];
     this.sessionSearchFailed = false;
+    this.sessionSearchPartial = false;
   }
 
   private scheduleSessionSearch(query: string) {
@@ -513,6 +527,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
     this.sessionSearchId += 1;
     this.sessionItems = [];
     this.sessionSearchFailed = false;
+    this.sessionSearchPartial = false;
     const search = normalizeOptionalString(query);
     if (
       !this.open ||
@@ -548,6 +563,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
       gateway.snapshot,
       "sessions.search",
     );
+    const defaultAgentId = resolveUiSelectedGlobalAgentId(gateway.snapshot);
     const transcriptSearch = transcriptSearchAvailable
       ? searchVisibleSessionTranscripts({
           client,
@@ -559,15 +575,21 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
             includeUnknown: false,
             configuredAgentsOnly: true,
           },
-          resolveAgentId: (sessionKey) => parseAgentSessionKey(sessionKey)?.agentId,
+          resolveAgentId: (sessionKey) =>
+            parseAgentSessionKey(sessionKey)?.agentId ?? defaultAgentId,
           isCurrent,
+          maxListPages: SESSION_TRANSCRIPT_MAX_LIST_PAGES,
+          maxSearchRequests: SESSION_TRANSCRIPT_MAX_REQUESTS,
+          maxSessionKeys: SESSION_TRANSCRIPT_MAX_SESSION_KEYS,
           mapPageRows: (rows) =>
             filterVisibleSessionRows(rows, {
               agentId: "",
-              defaultAgentId: "",
+              defaultAgentId,
               filterByAgent: false,
             }),
         })
+          .then((result) => ({ error: false as const, result }))
+          .catch(() => ({ error: true as const, result: null }))
       : Promise.resolve(null);
     const visibleRows: ReturnType<typeof getVisibleSessionRows> = [];
     const visibleKeys = new Set<string>();
@@ -575,54 +597,51 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
     let pagesLoaded = 0;
     let offset: number | undefined;
     try {
-      if (!transcriptSearchAvailable) {
-        while (
-          visibleRows.length < SESSION_SEARCH_LIMIT &&
-          pagesLoaded < SESSION_SEARCH_MAX_PAGES
-        ) {
-          const result = await sessions.list({
-            search,
-            limit: SESSION_SEARCH_PAGE_SIZE,
-            ...(offset === undefined ? {} : { offset }),
-            includeGlobal: false,
-            includeUnknown: false,
-          });
-          pagesLoaded += 1;
-          if (!isCurrent() || !result) {
-            return;
-          }
-          const pageRows = getVisibleSessionRows(result, {
-            agentId: "",
-            defaultAgentId: "",
-            filterByAgent: false,
-          });
-          for (const row of pageRows) {
-            if (!visibleKeys.has(row.key)) {
-              visibleKeys.add(row.key);
-              visibleRows.push(row);
-            }
-          }
-          if (visibleRows.length >= SESSION_SEARCH_LIMIT || !result.hasMore) {
-            break;
-          }
-          const nextOffset =
-            typeof result.nextOffset === "number" && Number.isFinite(result.nextOffset)
-              ? Math.max(0, Math.floor(result.nextOffset))
-              : result.sessions.length > 0
-                ? (offset ?? 0) + result.sessions.length
-                : null;
-          // Malformed pagination must not turn a palette query into an RPC loop.
-          if (nextOffset === null || seenOffsets.has(nextOffset)) {
-            break;
-          }
-          seenOffsets.add(nextOffset);
-          offset = nextOffset;
+      while (visibleRows.length < SESSION_SEARCH_LIMIT && pagesLoaded < SESSION_SEARCH_MAX_PAGES) {
+        const result = await sessions.list({
+          search,
+          limit: SESSION_SEARCH_PAGE_SIZE,
+          ...(offset === undefined ? {} : { offset }),
+          includeGlobal: false,
+          includeUnknown: false,
+        });
+        pagesLoaded += 1;
+        if (!isCurrent() || !result) {
+          return;
         }
+        const pageRows = getVisibleSessionRows(result, {
+          agentId: "",
+          defaultAgentId,
+          filterByAgent: false,
+        });
+        for (const row of pageRows) {
+          if (!visibleKeys.has(row.key)) {
+            visibleKeys.add(row.key);
+            visibleRows.push(row);
+          }
+        }
+        if (visibleRows.length >= SESSION_SEARCH_LIMIT || !result.hasMore) {
+          break;
+        }
+        const nextOffset =
+          typeof result.nextOffset === "number" && Number.isFinite(result.nextOffset)
+            ? Math.max(0, Math.floor(result.nextOffset))
+            : result.sessions.length > 0
+              ? (offset ?? 0) + result.sessions.length
+              : null;
+        // Malformed pagination must not turn a palette query into an RPC loop.
+        if (nextOffset === null || seenOffsets.has(nextOffset)) {
+          break;
+        }
+        seenOffsets.add(nextOffset);
+        offset = nextOffset;
       }
-      const transcriptResult = await transcriptSearch;
+      const transcriptOutcome = await transcriptSearch;
       if (!isCurrent()) {
         return;
       }
+      const transcriptResult = transcriptOutcome?.result ?? null;
+      this.sessionSearchPartial = transcriptOutcome?.error === true;
       const transcriptHitByKey = new Map<string, SessionsSearchHit>();
       for (const hit of transcriptResult?.results ?? []) {
         if (!transcriptHitByKey.has(hit.sessionKey)) {
@@ -656,14 +675,14 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
           return transcriptDiff || (right.row.updatedAt ?? 0) - (left.row.updatedAt ?? 0);
         })
         .slice(0, SESSION_SEARCH_LIMIT)
-        .map(({ row, metadataRank, transcriptHit }) => ({
+        .map(({ row, transcriptHit }) => ({
           id: `session-${row.key}`,
           label: resolveSessionDisplayName(row.key, row),
           icon: "messageSquare" as const,
           category: "chats" as const,
           action: `${SESSION_ACTION_PREFIX}${row.key}`,
           description:
-            metadataRank === 0 && transcriptHit
+            transcriptHit && sessionMetadataMatchRank(row, search) === 0
               ? transcriptSearchSnippet(transcriptHit.snippet)
               : formatRelativeTimestamp(row.updatedAt, { fallback: "" }),
         }));
@@ -698,6 +717,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
       activeIndex: this.activeIndex,
       sessionItems: this.sessionItems,
       sessionSearchFailed: this.sessionSearchFailed,
+      sessionSearchPartial: this.sessionSearchPartial,
       desktopAvailable: this.desktopAvailable,
       custodianAvailable: this.custodianAvailable,
       onToggle: this.togglePalette,
