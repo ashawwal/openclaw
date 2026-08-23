@@ -1601,7 +1601,7 @@ describe("Crabbox worker provider", () => {
   it.each([
     { providerId: "aws", warmupTimeoutMs: 240_000, provisionTimeoutMs: 1_250_000 },
     { providerId: "hetzner", warmupTimeoutMs: 240_000, provisionTimeoutMs: 1_250_000 },
-    { providerId: "machine0", warmupTimeoutMs: 20 * 60_000, provisionTimeoutMs: 37 * 60_000 },
+    { providerId: "machine0", warmupTimeoutMs: 30 * 60_000, provisionTimeoutMs: 47 * 60_000 },
   ])(
     "runs one fixed $providerId warmup, ignores its output, and inspects only the canonical id",
     async ({ providerId, warmupTimeoutMs, provisionTimeoutMs }) => {

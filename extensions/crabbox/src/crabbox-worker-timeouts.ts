@@ -20,8 +20,8 @@ const CRABBOX_PROVISION_TIMEOUT_MS = 290_000;
 export const CRABBOX_DESKTOP_WARMUP_TIMEOUT_MS = 50 * 60_000;
 const CRABBOX_DESKTOP_PROVISION_TIMEOUT_MS =
   CRABBOX_DESKTOP_WARMUP_TIMEOUT_MS + CRABBOX_LIFECYCLE_TIMEOUT_MS;
-// Machine0 owns a 15-minute VM creation budget before SSH readiness begins.
-export const CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS = 20 * 60_000;
+// The documented VM-create window precedes SSH readiness; observed readiness needs a bounded 30m.
+export const CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS = 30 * 60_000;
 export const CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS =
   CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS + CRABBOX_LIFECYCLE_TIMEOUT_MS;
 // Setup gets its own budget on top of provision so a slow warmup cannot starve it.
