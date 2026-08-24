@@ -50,7 +50,7 @@ Prereqs:
 - Xcode 26.x
 - `pnpm`
 - `xcodegen`
-- `fastlane`
+- Ruby 3.4.10 and Bundler 2.6.9 (`fastlane` is installed from `apps/ios/Gemfile.lock`)
 - Apple account signed into Xcode for the canonical OpenClaw team (`FWJYW4S8P8`)
 - Fastlane Apple Developer Portal session for the canonical OpenClaw team when creating bundle IDs or enabling services
 - Release-owner access to the encrypted signing repo password (`MATCH_PASSWORD`)

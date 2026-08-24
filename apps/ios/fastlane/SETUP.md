@@ -24,12 +24,9 @@ pnpm ios:release:archive -- --version 2026.7.2 --revision 1 --build-number 3
 ```
 
 An inherited `BUNDLE_GEMFILE` does not override the repository bundle.
-Set `OPENCLAW_IOS_FASTLANE_USE_AMBIENT=1` only when intentionally testing an
-ambient Fastlane installation instead of the repository bundle.
-
-```bash
-OPENCLAW_IOS_FASTLANE_USE_AMBIENT=1 pnpm ios:screenshots
-```
+Repository commands do not fall back to ambient Fastlane while
+`apps/ios/Gemfile` exists. If the locked bundle is unavailable, run the setup
+commands above and retry.
 
 Create an App Store Connect API key:
 

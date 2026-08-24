@@ -1,6 +1,15 @@
 // iOS Fastlane release gate tests keep TestFlight upload on one canonical path.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -35,9 +44,9 @@ const screenshotsScriptPath = path.join(process.cwd(), "scripts", "ios-screensho
 
 function runIosScreenshotsCommand(
   options: {
+    bundleCheckExit?: number;
     bundleExit?: number;
     conflictingGemfile?: boolean;
-    useAmbient?: boolean;
   } = {},
 ) {
   const fixture = mkdtempSync(path.join(tmpdir(), "openclaw-ios-fastlane-"));
@@ -50,6 +59,7 @@ function runIosScreenshotsCommand(
   writeExecutable(
     "bundle",
     '[[ "$BUNDLE_GEMFILE" == "$OPENCLAW_FASTLANE_EXPECTED_GEMFILE" ]] || exit 91\n' +
+      `[[ "\${1:-}" != "check" ]] || exit ${options.bundleCheckExit ?? 0}\n` +
       'printf "bundle:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n' +
       `exit ${options.bundleExit ?? 0}`,
   );
@@ -63,7 +73,6 @@ function runIosScreenshotsCommand(
         BUNDLE_GEMFILE: options.conflictingGemfile ? path.join(fixture, "Gemfile") : "",
         OPENCLAW_FASTLANE_EXPECTED_GEMFILE: gemfilePath,
         OPENCLAW_FASTLANE_TEST_TRACE: tracePath,
-        OPENCLAW_IOS_FASTLANE_USE_AMBIENT: options.useAmbient ? "1" : "0",
         PATH: `${fixture}:/usr/bin:/bin`,
       },
     });
@@ -174,6 +183,16 @@ describe("iOS Fastlane release upload gates", () => {
     expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
   });
 
+  it("prints the pinned setup command when the repository bundle is unavailable", () => {
+    const { result, trace } = runIosScreenshotsCommand({ bundleCheckExit: 1 });
+
+    expect(result.status).toBe(1);
+    expect(trace).toBe("");
+    expect(result.stderr).toContain("Install Ruby 3.4.10");
+    expect(result.stderr).toContain("gem install bundler -v 2.6.9");
+    expect(result.stderr).toContain("bundle _2.6.9_ install");
+  });
+
   it("ignores a conflicting inherited Gemfile on the pinned path", () => {
     const { result, trace } = runIosScreenshotsCommand({ conflictingGemfile: true });
 
@@ -181,11 +200,42 @@ describe("iOS Fastlane release upload gates", () => {
     expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
   });
 
-  it("allows an explicit ambient Fastlane opt-out", () => {
-    const { result, trace } = runIosScreenshotsCommand({ useAmbient: true });
+  it("uses ambient Fastlane only when the repository Gemfile is absent", () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), "openclaw-ios-fastlane-fallback-"));
+    const wrapperPath = path.join(fixture, "scripts", "lib", "ios-fastlane.sh");
+    const binDir = path.join(fixture, "bin");
+    const tracePath = path.join(fixture, "trace.log");
+    mkdirSync(path.dirname(wrapperPath), { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    copyFileSync(path.join(process.cwd(), "scripts", "lib", "ios-fastlane.sh"), wrapperPath);
+    const fastlanePath = path.join(binDir, "fastlane");
+    writeFileSync(
+      fastlanePath,
+      '#!/usr/bin/env bash\n[[ "${1:-}" == "--version" ]] && exit 0\nprintf "ambient:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n',
+      "utf8",
+    );
+    chmodSync(fastlanePath, 0o755);
 
-    expect(result.status).toBe(0);
-    expect(trace).toBe("ambient:--version\nambient:ios screenshots\n");
+    try {
+      const result = spawnSync(
+        "bash",
+        ["-c", `source "${wrapperPath}"; run_ios_fastlane ios screenshots`],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            BUNDLE_GEMFILE: "",
+            OPENCLAW_FASTLANE_TEST_TRACE: tracePath,
+            PATH: `${binDir}:/usr/bin:/bin`,
+          },
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(readFileSync(tracePath, "utf8")).toBe("ambient:ios screenshots\n");
+    } finally {
+      rmSync(fixture, { force: true, recursive: true });
+    }
   });
 
   it("does not keep the old package release alias", () => {

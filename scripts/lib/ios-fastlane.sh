@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 
 run_ios_fastlane() {
+  local repo_gemfile=""
+  repo_gemfile="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/apps/ios/Gemfile"
+
   local gemfile="${BUNDLE_GEMFILE:-}"
-  if [[ "${OPENCLAW_IOS_FASTLANE_USE_AMBIENT:-0}" != "1" ]]; then
-    local repo_gemfile=""
-    repo_gemfile="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/apps/ios/Gemfile"
-    if [[ -f "$repo_gemfile" ]]; then
-      gemfile="$repo_gemfile"
-    fi
+  if [[ -f "$repo_gemfile" ]]; then
+    gemfile="$repo_gemfile"
   fi
 
-  if [[ "${OPENCLAW_IOS_FASTLANE_USE_AMBIENT:-0}" != "1" && -n "$gemfile" ]]; then
+  if [[ -n "$gemfile" ]]; then
+    local setup_hint=""
+    setup_hint="Install Ruby 3.4.10, then run: cd apps/ios && gem install bundler -v 2.6.9 && bundle _2.6.9_ install"
     if ! command -v bundle >/dev/null 2>&1; then
-      echo "bundle not found for BUNDLE_GEMFILE=${gemfile}." >&2
+      echo "bundle not found for the iOS Fastlane bundle at ${gemfile}." >&2
+      echo "$setup_hint" >&2
       return 127
+    fi
+    if ! BUNDLE_GEMFILE="$gemfile" bundle check >/dev/null 2>&1; then
+      echo "The iOS Fastlane bundle is not installed for ${gemfile}." >&2
+      echo "$setup_hint" >&2
+      return 1
     fi
     BUNDLE_GEMFILE="$gemfile" bundle exec fastlane "$@"
     return $?
