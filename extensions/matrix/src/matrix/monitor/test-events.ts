@@ -6,6 +6,8 @@ type BundledReplacementEventOptions = {
   replacementContent?: Record<string, unknown>;
   replacement?: Partial<MatrixRawEvent>;
   redacted?: boolean;
+  stateKey?: string;
+  objectBackedArrays?: boolean;
 };
 
 export function createBundledReplacementEvent(
@@ -21,7 +23,9 @@ export function createBundledReplacementEvent(
       msgtype: "m.text",
       body: "* edited text",
       "m.new_content": { msgtype: "m.text", body: "edited text" },
-      "m.relates_to": { rel_type: "m.replace", event_id: eventId },
+      "m.relates_to": options.objectBackedArrays
+        ? Object.assign([], { rel_type: "m.replace", event_id: eventId })
+        : { rel_type: "m.replace", event_id: eventId },
       ...options.replacementContent,
     },
     ...options.replacement,
@@ -33,9 +37,12 @@ export function createBundledReplacementEvent(
     type: "m.room.message",
     origin_server_ts: 100,
     content: options.content ?? { msgtype: "m.text", body: "original text" },
+    ...(options.stateKey === undefined ? {} : { state_key: options.stateKey }),
     unsigned: {
       ...(options.redacted ? { redacted_because: { event_id: "$redaction" } } : {}),
-      "m.relations": { "m.replace": replacement },
+      "m.relations": {
+        "m.replace": options.objectBackedArrays ? Object.assign([], replacement) : replacement,
+      },
     },
   };
 }
@@ -44,6 +51,11 @@ export const bundledReplacementContentCases = [
   {
     name: "text",
     options: {},
+    expected: "edited text",
+  },
+  {
+    name: "legacy object-backed relation arrays",
+    options: { objectBackedArrays: true },
     expected: "edited text",
   },
   {
@@ -84,9 +96,37 @@ export const invalidBundledReplacementCases = [
     options: { replacement: { type: "m.room.notice" } },
   },
   {
+    name: "a state-event original",
+    options: { stateKey: "" },
+  },
+  {
+    name: "a state-event replacement",
+    options: { replacement: { state_key: "" } },
+  },
+  {
+    name: "a malformed replacement relation",
+    options: { replacementContent: { "m.relates_to": undefined } },
+  },
+  {
+    name: "missing replacement content",
+    options: { replacement: { content: {} } },
+  },
+  {
+    name: "array replacement content",
+    options: { replacementContent: { "m.new_content": [] } },
+  },
+  {
     name: "a redacted replacement",
     options: {
       replacement: { unsigned: { redacted_because: { event_id: "$redaction" } } },
+    },
+  },
+  {
+    name: "an object-backed redacted replacement",
+    options: {
+      replacement: {
+        unsigned: Object.assign([], { redacted_because: { event_id: "$redaction" } }),
+      },
     },
   },
 ] satisfies Array<{ name: string; options: BundledReplacementEventOptions }>;

@@ -1,5 +1,9 @@
 // Matrix plugin module implements media text behavior.
 import path from "node:path";
+import {
+  asNullableObjectRecord,
+  asNullableRecord,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import type {
   MatrixMessageAttachmentKind,
   MatrixMessageAttachmentSummary,
@@ -72,31 +76,26 @@ function resolveCaptionOrFilename(params: { body?: string; filename?: string }):
 
 export function resolveBundledMatrixReplacementContent(
   event: MatrixRawEvent,
-): RoomMessageEventContent | undefined {
-  const rawReplacement = event.unsigned?.["m.relations"]?.["m.replace"];
-  if (!rawReplacement || typeof rawReplacement !== "object" || event.state_key !== undefined) {
+): Partial<RoomMessageEventContent> | undefined {
+  const replacement = asNullableObjectRecord(event.unsigned?.["m.relations"]?.["m.replace"]);
+  if (!replacement || event.state_key !== undefined) {
     return undefined;
   }
-  const replacement = rawReplacement as Partial<MatrixRawEvent>;
-  const content = replacement.content;
-  const relation = content?.["m.relates_to"];
+  const content = asNullableObjectRecord(replacement.content);
+  const relation = asNullableObjectRecord(content?.["m.relates_to"]);
   const newContent = content?.["m.new_content"];
   if (
     replacement.sender !== event.sender ||
     replacement.type !== event.type ||
     replacement.state_key !== undefined ||
-    replacement.unsigned?.redacted_because ||
+    asNullableObjectRecord(replacement.unsigned)?.redacted_because ||
     !relation ||
-    typeof relation !== "object" ||
-    (relation as { rel_type?: unknown }).rel_type !== "m.replace" ||
-    (relation as { event_id?: unknown }).event_id !== event.event_id ||
-    !newContent ||
-    typeof newContent !== "object" ||
-    Array.isArray(newContent)
+    relation.rel_type !== "m.replace" ||
+    relation.event_id !== event.event_id
   ) {
     return undefined;
   }
-  return newContent as RoomMessageEventContent;
+  return asNullableRecord(newContent) ?? undefined;
 }
 
 type MatrixMessageContentInput = {
