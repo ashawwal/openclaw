@@ -61,6 +61,7 @@ type CommandPaletteProps = {
   catalogItems: readonly PaletteItem[];
   sessionSearchFailed: boolean;
   sessionSearchPartial: boolean;
+  sessionSearchIncomplete: boolean;
   onToggle: () => void;
   onQueryChange: (query: string) => void;
   onActiveIndexChange: (index: number) => void;
@@ -234,9 +235,13 @@ function renderCommandPalette(props: CommandPaletteProps) {
           }}
         />
         <div id=${paletteListboxId} class="cmd-palette__results" role="listbox">
-          ${props.sessionSearchPartial
+          ${props.sessionSearchPartial || props.sessionSearchIncomplete
             ? html`<div class="cmd-palette__empty" role="status">
-                ${t("palette.searchPartial")}
+                ${t(
+                  props.sessionSearchIncomplete
+                    ? "palette.searchIncomplete"
+                    : "palette.searchPartial",
+                )}
               </div>`
             : nothing}
           ${grouped.length === 0
@@ -308,6 +313,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
   @state() private catalogItems: readonly PaletteItem[] = [];
   @state() private sessionSearchFailed = false;
   @state() private sessionSearchPartial = false;
+  @state() private sessionSearchIncomplete = false;
 
   private readonly subscriptions = new SubscriptionsController(this);
   private sessionSearchTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -407,6 +413,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
     this.sessionItems = [];
     this.sessionSearchFailed = false;
     this.sessionSearchPartial = false;
+    this.sessionSearchIncomplete = false;
   }
 
   private clearCatalogSearch() {
@@ -461,6 +468,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
     this.sessionItems = [];
     this.sessionSearchFailed = false;
     this.sessionSearchPartial = false;
+    this.sessionSearchIncomplete = false;
     const search = normalizeOptionalString(query);
     if (!this.open || !search || search.length < SESSION_SEARCH_MIN_CHARS) {
       return;
@@ -572,10 +580,10 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
         return;
       }
       const transcriptResult = transcriptOutcome?.result ?? null;
-      this.sessionSearchPartial =
-        transcriptOutcome?.error === true ||
-        transcriptResult?.indexing === true ||
-        transcriptResult?.truncated === true;
+      this.sessionSearchPartial = transcriptOutcome?.error === true;
+      this.sessionSearchIncomplete =
+        transcriptOutcome?.error !== true &&
+        (transcriptResult?.indexing === true || transcriptResult?.truncated === true);
       const transcriptHitByKey = new Map<string, SessionsSearchHit>();
       for (const hit of transcriptResult?.results ?? []) {
         if (!transcriptHitByKey.has(hit.sessionKey)) {
@@ -660,6 +668,7 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
       ],
       sessionSearchFailed: this.sessionSearchFailed,
       sessionSearchPartial: this.sessionSearchPartial,
+      sessionSearchIncomplete: this.sessionSearchIncomplete,
       desktopAvailable: this.desktopAvailable,
       custodianAvailable: this.custodianAvailable,
       onToggle: this.togglePalette,

@@ -339,8 +339,30 @@ describe("CommandPalette lifecycle", () => {
     { state: "truncated", response: { truncated: true } },
   ])("shows a partial-search notice when transcript results are $state", async ({ response }) => {
     const metadata = createSessionResult("agent:main:metadata", "Needle planning");
-    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async () => metadata);
-    const request = vi.fn(async () => ({ results: [], ...response }));
+    const contextOnly = createSessionResult("agent:main:context", "Unrelated title");
+    const roster = {
+      ...metadata,
+      count: 2,
+      totalCount: 2,
+      sessions: [...metadata.sessions, ...contextOnly.sessions],
+    } as SessionsListResult;
+    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
+      options?.search ? metadata : roster,
+    );
+    const request = vi.fn(async () => ({
+      results: [
+        {
+          sessionKey: "agent:main:context",
+          sessionId: "context",
+          messageId: "message-context",
+          role: "assistant" as const,
+          timestamp: 42,
+          snippet: "The needle also appears in this transcript.",
+          score: 10,
+        },
+      ],
+      ...response,
+    }));
     const { gateway } = createGateway(true, {
       methods: ["sessions.search"],
       request: request as GatewayBrowserClient["request"],
@@ -353,9 +375,11 @@ describe("CommandPalette lifecycle", () => {
     await palette.updateComplete;
 
     expect(palette.textContent).toContain(
-      "Transcript search unavailable — showing chat titles and metadata",
+      "Transcript matches may be incomplete — indexing or search limits apply",
     );
     expect(palette.textContent).toContain("Needle planning");
+    expect(palette.textContent).toContain("Unrelated title");
+    expect(palette.textContent).toContain("needle also appears in this transcript");
   });
 
   it("lazily searches automation names and descriptions once per connection", async () => {

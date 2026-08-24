@@ -4331,6 +4331,7 @@ export const en: TranslationMap = {
     noResults: "No results",
     searchFailed: "Chat search failed — check the gateway logs and retry",
     searchPartial: "Transcript search unavailable — showing chat titles and metadata",
+    searchIncomplete: "Transcript matches may be incomplete — indexing or search limits apply",
     categories: {
       search: "Search",
       navigation: "Navigation",
