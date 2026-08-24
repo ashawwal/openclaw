@@ -298,6 +298,7 @@ function projectAssistantCommentaryFallbacks(message: unknown, maxChars: number)
   ) {
     return [];
   }
+  const transcriptMeta = readRecord(entry["__openclaw"]);
   return entry.content.flatMap((block) => {
     const content = readRecord(block);
     if (!content) {
@@ -315,6 +316,16 @@ function projectAssistantCommentaryFallbacks(message: unknown, maxChars: number)
       return [];
     }
     const projected = truncateChatHistoryText(text, maxChars);
+    const projectedMeta = projected.truncated
+      ? {
+          ...transcriptMeta,
+          truncated: true,
+          reason:
+            typeof transcriptMeta?.reason === "string" ? transcriptMeta.reason : "display-cap",
+        }
+      : transcriptMeta
+        ? { ...transcriptMeta }
+        : undefined;
     return [
       {
         role: "assistant",
@@ -325,7 +336,7 @@ function projectAssistantCommentaryFallbacks(message: unknown, maxChars: number)
           source: "segment",
           itemId,
         },
-        ...(projected.truncated ? { __openclaw: { truncated: true, reason: "display-cap" } } : {}),
+        ...(projectedMeta ? { __openclaw: projectedMeta } : {}),
       },
     ];
   });

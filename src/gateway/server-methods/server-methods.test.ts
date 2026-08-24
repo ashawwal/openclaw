@@ -1890,6 +1890,7 @@ describe("projectRecentChatDisplayMessages", () => {
         role: "assistant",
         content: [{ type: "text", text: "I will clean that up now." }],
         timestamp: 2,
+        __openclaw: { seq: 2 },
         openclawStreamFallback: {
           replacementText: "I will clean that up now.",
           source: "segment",
