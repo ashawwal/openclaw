@@ -64,7 +64,7 @@ function runIosScreenshotsCommand(
       'printf "bundle:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n' +
       `exit ${options.bundleExit ?? 0}`,
   );
-  writeExecutable("fastlane", 'printf "ambient:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"');
+  writeExecutable("fastlane", 'printf "direct:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"');
 
   try {
     const result = spawnSync("bash", [screenshotsScriptPath], {
@@ -170,7 +170,7 @@ describe("iOS Fastlane release upload gates", () => {
     }
   });
 
-  it("prefers the repository bundle over an ambient Fastlane", () => {
+  it("uses the repository bundle when Fastlane is also on PATH", () => {
     const { result, trace } = runIosScreenshotsCommand();
 
     expect(result.status).toBe(0);
@@ -201,18 +201,20 @@ describe("iOS Fastlane release upload gates", () => {
     expect(trace).toBe("bundle:_2.6.9_ exec fastlane ios screenshots\n");
   });
 
-  it("uses ambient Fastlane only when the repository Gemfile is absent", () => {
-    const fixture = mkdtempSync(path.join(tmpdir(), "openclaw-ios-fastlane-fallback-"));
+  it("fails closed when the repository Gemfile is absent", () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), "openclaw-ios-fastlane-missing-gemfile-"));
     const wrapperPath = path.join(fixture, "scripts", "lib", "ios-fastlane.sh");
     const binDir = path.join(fixture, "bin");
     const tracePath = path.join(fixture, "trace.log");
     mkdirSync(path.dirname(wrapperPath), { recursive: true });
     mkdirSync(binDir, { recursive: true });
     copyFileSync(path.join(process.cwd(), "scripts", "lib", "ios-fastlane.sh"), wrapperPath);
+    const inheritedGemfile = path.join(fixture, "Gemfile");
+    writeFileSync(inheritedGemfile, 'gem "fastlane"\n', "utf8");
     const fastlanePath = path.join(binDir, "fastlane");
     writeFileSync(
       fastlanePath,
-      '#!/usr/bin/env bash\n[[ "${1:-}" == "--version" ]] && exit 0\nprintf "ambient:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n',
+      '#!/usr/bin/env bash\nprintf "direct:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n',
       "utf8",
     );
     chmodSync(fastlanePath, 0o755);
@@ -225,15 +227,18 @@ describe("iOS Fastlane release upload gates", () => {
           encoding: "utf8",
           env: {
             ...process.env,
-            BUNDLE_GEMFILE: "",
+            BUNDLE_GEMFILE: inheritedGemfile,
             OPENCLAW_FASTLANE_TEST_TRACE: tracePath,
             PATH: `${binDir}:/usr/bin:/bin`,
           },
         },
       );
 
-      expect(result.status).toBe(0);
-      expect(readFileSync(tracePath, "utf8")).toBe("ambient:ios screenshots\n");
+      expect(result.status).toBe(1);
+      expect(existsSync(tracePath)).toBe(false);
+      expect(result.stderr).toContain("repository iOS Gemfile is missing");
+      expect(result.stderr).toContain("Restore it from the repository checkout");
+      expect(result.stderr).toContain("bundle _2.6.9_ install");
     } finally {
       rmSync(fixture, { force: true, recursive: true });
     }

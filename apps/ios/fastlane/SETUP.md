@@ -4,7 +4,7 @@ Install the pinned Ruby bundle:
 
 ```bash
 cd apps/ios
-# Install Ruby 3.4.10 with rbenv, mise, or another .ruby-version-aware manager.
+# Install Ruby 3.4.10 with mise or another .ruby-version-aware manager.
 ruby --version
 gem install bundler -v 2.6.9
 bundle _2.6.9_ install
@@ -24,9 +24,9 @@ pnpm ios:release:archive -- --version 2026.7.2 --revision 1 --build-number 3
 ```
 
 An inherited `BUNDLE_GEMFILE` does not override the repository bundle.
-Repository commands do not fall back to ambient Fastlane while
-`apps/ios/Gemfile` exists. If the locked bundle is unavailable, run the setup
-commands above and retry.
+Repository commands require `apps/ios/Gemfile` and fail if it is missing.
+Restore a missing Gemfile from the repository checkout. If the locked bundle is
+unavailable, run the setup commands above and retry.
 
 Create an App Store Connect API key:
 
