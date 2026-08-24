@@ -13,11 +13,13 @@ import type {
 } from "../../plugins/cli-backend.types.js";
 import type { RunExit, TerminationReason } from "../../process/supervisor/types.js";
 import { resolveAdmittedRunActiveAssertion } from "../admitted-run-context.js";
+import { runBeforeToolCallHook } from "../agent-tools.before-tool-call.js";
 import type { CliTerminalInterruption } from "../cli-output-contracts.js";
 import { resolveExecDefaults } from "../exec-defaults.js";
 import { isSignalTimeoutReason, type FailoverError } from "../failover-error.js";
 import { runStructuredInput } from "../harness/structured-input-execution.js";
 import { compileStructuredInputQuestions } from "../harness/structured-input.js";
+import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
 import { callGatewayTool } from "../tools/gateway.js";
 import {
   closeCliLiveSession,
@@ -75,6 +77,56 @@ function createPluginToolPermissionHandler(params: {
       return denyTool(`OpenClaw denied native tool ${toolName}: it is unavailable to this run.`);
     }
 
+    const requester = {
+      ...((run.messageChannel ?? run.messageProvider)
+        ? { channel: run.messageChannel ?? run.messageProvider }
+        : {}),
+      ...(run.agentAccountId ? { accountId: run.agentAccountId } : {}),
+      ...(run.senderId ? { senderId: run.senderId } : {}),
+      ...(run.senderIsOwner !== undefined ? { senderIsOwner: run.senderIsOwner } : {}),
+    };
+    const hookResult = await runBeforeToolCallHook({
+      toolName,
+      params: request.toolInput,
+      ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
+      signal,
+      ctx: {
+        ...(run.agentId ? { agentId: run.agentId } : {}),
+        ...(run.config ? { config: run.config } : {}),
+        cwd: params.context.cwd ?? params.context.workspaceDir,
+        workspaceDir: params.context.workspaceDir,
+        ...(run.sessionKey ? { sessionKey: run.sessionKey } : {}),
+        sessionId: run.sessionId,
+        runId: run.runId,
+        ...(run.trigger ? { trigger: run.trigger } : {}),
+        ...(run.approvalReviewerDeviceId
+          ? { approvalReviewerDeviceId: run.approvalReviewerDeviceId }
+          : {}),
+        ...(run.currentChannelId ? { channelId: run.currentChannelId } : {}),
+        ...(Object.keys(requester).length > 0 ? { requester } : {}),
+        turnSourceChannel: run.messageChannel ?? run.messageProvider,
+        turnSourceTo: run.chatId ?? run.currentChannelId,
+        turnSourceAccountId: run.agentAccountId,
+        turnSourceThreadId: run.currentThreadTs,
+        loopDetection: resolveToolLoopDetectionConfig({
+          cfg: run.config,
+          agentId: run.agentId,
+        }),
+      },
+    });
+    try {
+      assertActive();
+    } catch {
+      return denyTool("OpenClaw denied native tool use: the admitted run closed during policy.");
+    }
+    if (hookResult.blocked) {
+      return denyTool(hookResult.reason);
+    }
+    if (!isRecord(hookResult.params)) {
+      return denyTool("OpenClaw denied native tool use: before_tool_call returned invalid input.");
+    }
+    const toolInput = hookResult.params;
+
     const plan = resolveCliNativeToolApprovalPlan(permission);
     if (plan === "deny") {
       return denyTool(
@@ -84,7 +136,7 @@ function createPluginToolPermissionHandler(params: {
     const currentGrants = getCliLiveSessionApprovalGrants(params.context) ?? grants;
     if (plan === "allow" || (permission.ask !== "always" && currentGrants.has(toolName))) {
       assertActive();
-      return { behavior: "allow", updatedInput: request.toolInput };
+      return { behavior: "allow", updatedInput: toolInput };
     }
 
     params.onPendingApproval(1);
@@ -92,7 +144,7 @@ function createPluginToolPermissionHandler(params: {
     try {
       outcome = await requestCliNativeToolApproval({
         toolName,
-        toolInput: request.toolInput,
+        toolInput,
         pluginId: params.context.backendResolved.id,
         sessionKey: run.sessionKey,
         agentId: run.agentId,
@@ -122,7 +174,7 @@ function createPluginToolPermissionHandler(params: {
     if (outcome.grantAlways) {
       currentGrants.add(toolName);
     }
-    return { behavior: "allow", updatedInput: request.toolInput };
+    return { behavior: "allow", updatedInput: toolInput };
   };
 }
 
