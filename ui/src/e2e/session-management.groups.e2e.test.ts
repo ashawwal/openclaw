@@ -1,5 +1,6 @@
 import path from "node:path";
 import { expect, it } from "vitest";
+import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e.ts";
 import {
   actionOpacity,
   activateSelfRemovingControl,
@@ -175,7 +176,23 @@ suite.define(() => {
     const page = await context.newPage();
     await page.clock.install();
     const gateway = await installMockGateway(page, {
+      featureMethods: [...defaultControlUiFeatureMethods, "cron.list"],
       methodResponses: {
+        "cron.list": {
+          jobs: [
+            {
+              id: "nightly-invoices",
+              name: "Nightly invoices",
+              description: "Reconciles customer billing",
+            },
+          ],
+          snapshotRevision: "1",
+          total: 1,
+          limit: 200,
+          offset: 0,
+          nextOffset: null,
+          hasMore: false,
+        },
         "sessions.list": {
           cases: [
             {
@@ -309,10 +326,23 @@ suite.define(() => {
         )
         .toBe(true);
 
+      // The same palette lazily loads small non-session catalogs once and
+      // matches both item names and descriptions without involving FTS.
+      const cronRequestsBeforePalette = (await gateway.getRequests("cron.list")).length;
+      const transcriptRequestsBeforePalette = (await gateway.getRequests("sessions.search")).length;
+      await page.getByRole("button", { name: "Open command palette" }).click();
+      const paletteInput = page.locator(".cmd-palette__input");
+      await paletteInput.waitFor({ state: "visible", timeout: 10_000 });
+      await paletteInput.fill("reconciles customer billing");
+      await page.clock.runFor(50);
+      const automationOption = page.getByRole("option", { name: /Nightly invoices/u });
+      await automationOption.waitFor({ state: "visible", timeout: 10_000 });
+      expect(await gateway.getRequests("cron.list")).toHaveLength(cronRequestsBeforePalette + 1);
+      await page.keyboard.press("Escape");
+
       // Command palette is the single search surface: metadata and indexed
       // conversation text share one field, and selecting either navigates.
       await page.getByRole("button", { name: "Open command palette" }).click();
-      const paletteInput = page.locator(".cmd-palette__input");
       await paletteInput.waitFor({ state: "visible", timeout: 10_000 });
       await paletteInput.fill("view-only handshake");
       await page.clock.runFor(50);
@@ -321,9 +351,10 @@ suite.define(() => {
         .filter({ hasText: "Release planning" });
       await paletteOption.waitFor({ state: "visible", timeout: 10_000 });
       await expect.poll(() => paletteOption.textContent()).toContain("view-only handshake");
+      expect(await gateway.getRequests("cron.list")).toHaveLength(cronRequestsBeforePalette + 1);
       const transcriptRequests = await gateway.getRequests("sessions.search");
-      expect(transcriptRequests).toHaveLength(1);
-      expect(requireRecord(transcriptRequests[0]?.params)).toMatchObject({
+      expect(transcriptRequests).toHaveLength(transcriptRequestsBeforePalette + 2);
+      expect(requireRecord(transcriptRequests.at(-1)?.params)).toMatchObject({
         agentId: "main",
         query: "view-only handshake",
       });

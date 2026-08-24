@@ -81,6 +81,9 @@ function createContext(
 ): ApplicationContext<RouteId> {
   return {
     gateway,
+    agents: {
+      ensureList: async () => null,
+    },
     sessions: {
       list,
       state: { result: null },
@@ -329,6 +332,48 @@ describe("CommandPalette lifecycle", () => {
       "Transcript search unavailable — showing chat titles and metadata",
     );
     expect(palette.textContent).not.toContain("Chat search failed");
+  });
+
+  it("lazily searches automation names and descriptions once per connection", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "cron.list") {
+        return {
+          jobs: [
+            {
+              id: "nightly-invoices",
+              name: "Nightly invoices",
+              description: "Reconciles customer billing",
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const { gateway } = createGateway(true, {
+      methods: ["cron.list"],
+      request: request as GatewayBrowserClient["request"],
+    });
+    const empty = { ...createSessionResult("agent:main:none", "None"), sessions: [] };
+    const { palette } = await mountPalette(
+      createContext(
+        gateway,
+        vi.fn(async () => empty),
+      ),
+    );
+
+    await enterQuery(palette, "reconciles");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(palette.textContent).toContain("Nightly invoices"));
+    const item = palette.querySelector<HTMLElement>(
+      "#cmd-palette-option-automation-nightly-invoices",
+    );
+    item?.click();
+    expect(palette.onNavigate).toHaveBeenCalledWith("cron");
+
+    await enterQuery(palette, "invoices");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(palette.textContent).toContain("Nightly invoices"));
+    expect(request.mock.calls.filter(([method]) => method === "cron.list")).toHaveLength(1);
   });
 
   it("waits for two characters before searching sessions", async () => {
