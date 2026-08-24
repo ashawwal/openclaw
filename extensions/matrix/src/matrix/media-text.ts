@@ -3,6 +3,8 @@ import path from "node:path";
 import type {
   MatrixMessageAttachmentKind,
   MatrixMessageAttachmentSummary,
+  MatrixRawEvent,
+  RoomMessageEventContent,
 } from "./actions/types.js";
 
 const MATRIX_MEDIA_KINDS: Record<string, MatrixMessageAttachmentKind> = {
@@ -66,6 +68,35 @@ function resolveCaptionOrFilename(params: { body?: string; filename?: string }):
     return { filename: body };
   }
   return { caption: body };
+}
+
+export function resolveBundledMatrixReplacementContent(
+  event: MatrixRawEvent,
+): RoomMessageEventContent | undefined {
+  const rawReplacement = event.unsigned?.["m.relations"]?.["m.replace"];
+  if (!rawReplacement || typeof rawReplacement !== "object" || event.state_key !== undefined) {
+    return undefined;
+  }
+  const replacement = rawReplacement as Partial<MatrixRawEvent>;
+  const content = replacement.content;
+  const relation = content?.["m.relates_to"];
+  const newContent = content?.["m.new_content"];
+  if (
+    replacement.sender !== event.sender ||
+    replacement.type !== event.type ||
+    replacement.state_key !== undefined ||
+    replacement.unsigned?.redacted_because ||
+    !relation ||
+    typeof relation !== "object" ||
+    (relation as { rel_type?: unknown }).rel_type !== "m.replace" ||
+    (relation as { event_id?: unknown }).event_id !== event.event_id ||
+    !newContent ||
+    typeof newContent !== "object" ||
+    Array.isArray(newContent)
+  ) {
+    return undefined;
+  }
+  return newContent as RoomMessageEventContent;
 }
 
 type MatrixMessageContentInput = {
