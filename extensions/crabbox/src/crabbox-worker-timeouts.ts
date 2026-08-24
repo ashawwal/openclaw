@@ -23,8 +23,8 @@ const CRABBOX_DESKTOP_PROVISION_TIMEOUT_MS =
   CRABBOX_DESKTOP_WARMUP_TIMEOUT_MS + CRABBOX_LIFECYCLE_TIMEOUT_MS;
 // The documented VM-create window precedes SSH readiness; observed readiness needs a bounded 30m.
 export const CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS = 30 * 60_000;
-// Exceed Machine0's one-minute read backoff while bounding inspect and stop recovery.
-const CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS = 3 * 60_000;
+// Fixed-lease inspection can follow warmup's final read; allow four one-minute retries.
+const CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS = 5 * 60_000;
 const CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS =
   CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS + CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS;
 // Setup gets its own budget on top of provision so a slow warmup cannot starve it.
