@@ -7,8 +7,8 @@ import {
   type WorkerProvider,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { runCommandWithTimeout, type SpawnResult } from "openclaw/plugin-sdk/process-runtime";
-import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe, truncateUtf8Prefix } from "openclaw/plugin-sdk/text-utility-runtime";
+import { assertCrabboxCloudConfigPolicy } from "./crabbox-worker-cloud-config-policy.js";
 import {
   crabboxCommandError,
   permanentCrabboxCommandError,
@@ -101,56 +101,6 @@ type CrabboxWorkerProviderDependencies = {
   wallpaperPath: string;
   warn?: (message: string) => void;
 };
-
-async function loadCrabboxConfigShow(params: {
-  binary: string;
-  runCommand: CrabboxCommandRunner;
-}): Promise<unknown> {
-  const result = await runCrabboxCommand({
-    action: "config show",
-    args: ["config", "show", "--json"],
-    binary: params.binary,
-    runCommand: params.runCommand,
-    timeoutMs: CRABBOX_LIFECYCLE_TIMEOUT_MS,
-  });
-  if (result.termination !== "exit" || result.code !== 0) {
-    throw permanentCrabboxCommandError("config show", result);
-  }
-  try {
-    return JSON.parse(result.stdout) as unknown;
-  } catch {
-    throw new WorkerProviderError("Crabbox config show returned invalid JSON");
-  }
-}
-
-async function assertAwsWorkerHasNoInstanceProfile(params: {
-  binary: string;
-  runCommand: CrabboxCommandRunner;
-}): Promise<void> {
-  const config = await loadCrabboxConfigShow(params);
-  const instanceProfile =
-    config && typeof config === "object" && !Array.isArray(config)
-      ? (config as { aws?: { instanceProfile?: unknown } }).aws?.instanceProfile
-      : undefined;
-  if (typeof instanceProfile !== "string") {
-    throw new WorkerProviderError("Crabbox config show returned an invalid AWS instance profile");
-  }
-  if (nonEmptyString(instanceProfile)) {
-    throw new WorkerProviderError("Crabbox AWS instance profile must be empty for cloud workers");
-  }
-}
-
-async function assertHetznerDesktopHasManagedCoordinator(params: {
-  binary: string;
-  runCommand: CrabboxCommandRunner;
-}): Promise<void> {
-  const config = await loadCrabboxConfigShow(params);
-  const view = isRecord(config) ? config : undefined;
-  if (nonEmptyString(view?.coordinator) && view?.brokerMode === "managed") {
-    return;
-  }
-  throw new WorkerProviderError("Crabbox Hetzner desktop profiles require a managed coordinator");
-}
 
 async function inspectWithContext(params: {
   context: Omit<LeaseCommandContext, "id">;
@@ -381,28 +331,16 @@ async function collectNodeEnrollmentEvidence(
   return `${prefix}${truncateUtf8Prefix(safeDetail, MAX_NODE_ENROLLMENT_EVIDENCE_BYTES - prefix.length)}`;
 }
 
-async function stopProvisionId(params: {
-  binary: string;
-  id: string;
-  provider: string;
-  runCommand: CrabboxCommandRunner;
-}): Promise<void> {
-  await stopCrabboxLease({
-    binary: params.binary,
-    id: params.id,
-    provider: params.provider,
-    runCommand: params.runCommand,
-    // Cleanup gets its own budget so an exhausted provision deadline cannot leak a lease.
-    timeoutMs: resolveCrabboxLifecycleTimeoutMs(params.provider),
-  });
-}
-
 async function failProvisionAfterCleanup(
   params: LeaseCommandContext & { runCommand: CrabboxCommandRunner },
   provisionError: unknown,
 ): Promise<never> {
   try {
-    await stopProvisionId(params);
+    await stopCrabboxLease({
+      ...params,
+      // Cleanup gets its own budget so an exhausted provision deadline cannot leak a lease.
+      timeoutMs: resolveCrabboxLifecycleTimeoutMs(params.provider),
+    });
   } catch (cleanupError) {
     throw WorkerProviderError.cleanupIndeterminate(params.id, provisionError, cleanupError);
   }
@@ -574,11 +512,11 @@ export function createCrabboxWorkerProvider(
       const leaseId = operationLeaseId(operationId);
       const slug = operationSlug(operationId);
       if (parsed.desktop && parsed.provider === "hetzner") {
-        await assertHetznerDesktopHasManagedCoordinator({ binary, runCommand });
+        await assertCrabboxCloudConfigPolicy({ binary, provider: "hetzner", runCommand });
       }
       if (parsed.provider === "aws") {
         try {
-          await assertAwsWorkerHasNoInstanceProfile({ binary, runCommand });
+          await assertCrabboxCloudConfigPolicy({ binary, provider: "aws", runCommand });
         } catch (error) {
           if (!(error instanceof WorkerProviderError)) {
             throw error;
