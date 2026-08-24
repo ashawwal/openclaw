@@ -4,13 +4,31 @@ Install the pinned Ruby bundle:
 
 ```bash
 cd apps/ios
+# Install Ruby 3.4.10 with rbenv, mise, or another .ruby-version-aware manager.
+ruby --version
 gem install bundler -v 2.6.9
 bundle _2.6.9_ install
+bundle _2.6.9_ check
 ```
 
-Fastlane is pinned in `apps/ios/Gemfile.lock`. Repository release wrappers use
-`bundle exec fastlane` whenever `BUNDLE_GEMFILE` is set; CI sets it to the
-absolute `apps/ios/Gemfile` path.
+The expected runtime is recorded in `apps/ios/.ruby-version`, and the Gemfile
+enforces the same Ruby version. Fastlane and dependency checksums are pinned in
+`apps/ios/Gemfile.lock`.
+
+Repository commands use that bundle automatically:
+
+```bash
+pnpm ios:screenshots
+pnpm ios:release:plan -- --json
+pnpm ios:release:archive -- --version 2026.7.2 --revision 1 --build-number 3
+```
+
+Set `OPENCLAW_IOS_FASTLANE_USE_AMBIENT=1` only when intentionally testing an
+ambient Fastlane installation instead of the repository bundle.
+
+```bash
+OPENCLAW_IOS_FASTLANE_USE_AMBIENT=1 pnpm ios:screenshots
+```
 
 Create an App Store Connect API key:
 
@@ -71,7 +89,7 @@ pnpm ios:release:signing:check
 pnpm ios:release:signing:setup
 ```
 
-`signing:setup` uses Fastlane `produce` and `modify_services` to create Developer Portal bundle IDs and enable required services before running `match`. The main app also requires App Attest, and the main app and share extension both require the shared App Group from `apps/ios/Config/AppStoreSigning.json`; associate that group with both bundle IDs in the Apple Developer Portal before regenerating profiles. If Fastlane does not already have a valid Apple Developer Portal session, run `BUNDLE_GEMFILE="$PWD/apps/ios/Gemfile" bundle exec fastlane spaceauth` from the repository root for a release-owner Apple ID and export the resulting `FASTLANE_SESSION`.
+`signing:setup` uses Fastlane `produce` and `modify_services` to create Developer Portal bundle IDs and enable required services before running `match`. The main app also requires App Attest, and the main app and share extension both require the shared App Group from `apps/ios/Config/AppStoreSigning.json`; associate that group with both bundle IDs in the Apple Developer Portal before regenerating profiles. If Fastlane does not already have a valid Apple Developer Portal session, run `cd apps/ios && bundle _2.6.9_ exec fastlane spaceauth` for a release-owner Apple ID and export the resulting `FASTLANE_SESSION`.
 
 Shared encrypted signing storage:
 
@@ -88,7 +106,7 @@ Validate auth:
 
 ```bash
 cd apps/ios
-BUNDLE_GEMFILE="$PWD/Gemfile" bundle exec fastlane ios auth_check
+bundle _2.6.9_ exec fastlane ios auth_check
 ```
 
 App Store Connect API auth is required when:
@@ -141,7 +159,7 @@ APP_STORE_CONNECT_KEYCHAIN_ACCOUNT=YOUR_MAC_USERNAME
 
 ```bash
 cd apps/ios
-BUNDLE_GEMFILE="$PWD/Gemfile" bundle exec fastlane ios auth_check
+bundle _2.6.9_ exec fastlane ios auth_check
 ```
 
 4. Plan and cut the exact encoded-version changelog section:

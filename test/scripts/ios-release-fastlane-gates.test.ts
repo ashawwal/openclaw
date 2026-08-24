@@ -1,5 +1,7 @@
 // iOS Fastlane release gate tests keep TestFlight upload on one canonical path.
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -16,9 +18,50 @@ const snapshotUITestPath = path.join(
 );
 const rootTabsPath = path.join(process.cwd(), "apps", "ios", "Sources", "RootTabs.swift");
 const ciWorkflowPath = path.join(process.cwd(), ".github", "workflows", "ci.yml");
+const rubyVersionPath = path.join(process.cwd(), "apps", "ios", ".ruby-version");
 const gemfilePath = path.join(process.cwd(), "apps", "ios", "Gemfile");
 const gemfileLockPath = path.join(process.cwd(), "apps", "ios", "Gemfile.lock");
-const fastlaneWrapperPath = path.join(process.cwd(), "scripts", "lib", "ios-fastlane.sh");
+const screenshotsScriptPath = path.join(process.cwd(), "scripts", "ios-screenshots.sh");
+
+function runIosScreenshotsCommand(
+  options: {
+    bundleExit?: number;
+    useAmbient?: boolean;
+  } = {},
+) {
+  const fixture = mkdtempSync(path.join(tmpdir(), "openclaw-ios-fastlane-"));
+  const tracePath = path.join(fixture, "trace.log");
+  const writeExecutable = (name: string, body: string) => {
+    const executable = path.join(fixture, name);
+    writeFileSync(executable, `#!/usr/bin/env bash\n${body}\n`, "utf8");
+    chmodSync(executable, 0o755);
+  };
+  writeExecutable(
+    "bundle",
+    'printf "bundle:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n' +
+      `exit ${options.bundleExit ?? 0}`,
+  );
+  writeExecutable("fastlane", 'printf "ambient:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"');
+
+  try {
+    const result = spawnSync("bash", [screenshotsScriptPath], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        BUNDLE_GEMFILE: "",
+        OPENCLAW_FASTLANE_TEST_TRACE: tracePath,
+        OPENCLAW_IOS_FASTLANE_USE_AMBIENT: options.useAmbient ? "1" : "0",
+        PATH: `${fixture}:/usr/bin:/bin`,
+      },
+    });
+    return {
+      result,
+      trace: existsSync(tracePath) ? readFileSync(tracePath, "utf8") : "",
+    };
+  } finally {
+    rmSync(fixture, { force: true, recursive: true });
+  }
+}
 
 function readFastfile(): string {
   return readFileSync(fastfilePath, "utf8");
@@ -69,29 +112,46 @@ describe("iOS Fastlane release upload gates", () => {
     const gemfile = readFileSync(gemfilePath, "utf8");
     const lockfile = readFileSync(gemfileLockPath, "utf8");
 
+    expect(readFileSync(rubyVersionPath, "utf8")).toBe("3.4.10\n");
     expect(gemfile).toContain('gem "fastlane", "2.236.1"');
+    expect(gemfile).toContain('ruby "3.4.10"');
     expect(lockfile).toContain("fastlane (2.236.1)");
     expect(lockfile).toContain("arm64-darwin");
     expect(lockfile).toContain("x86_64-darwin");
+    expect(lockfile).toContain("CHECKSUMS");
+    expect(lockfile).toContain("RUBY VERSION\n   ruby 3.4.10");
     expect(lockfile).toContain("BUNDLED WITH\n   2.6.9");
+    expect(iosJob).toContain('BUNDLE_DEPLOYMENT: "true"');
     expect(iosJob).toContain("BUNDLE_GEMFILE: ${{ github.workspace }}/apps/ios/Gemfile");
     expect(iosJob).toContain("ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b");
     expect(iosJob).toContain('ruby-version: "3.4.10"');
     expect(iosJob).toContain('bundler: "2.6.9"');
-    expect(iosJob).toContain("bundler-cache: true");
+    expect(iosJob).toContain("bundler-cache: false");
     expect(iosJob).toContain("working-directory: apps/ios");
+    expect(iosJob).toContain("bundle _2.6.9_ install --jobs 4 --retry 3");
+    expect(iosJob).toContain("bundle _2.6.9_ check");
+    expect(iosJob).toContain("bundle _2.6.9_ exec fastlane --version");
   });
 
-  it("uses the locked Fastlane bundle whenever BUNDLE_GEMFILE is set", () => {
-    const wrapper = readFileSync(fastlaneWrapperPath, "utf8");
-    const bundleBranch = wrapper.slice(
-      wrapper.indexOf('if [[ -n "${BUNDLE_GEMFILE:-}" ]]'),
-      wrapper.indexOf("if command -v fastlane"),
-    );
+  it("prefers the repository bundle over an ambient Fastlane", () => {
+    const { result, trace } = runIosScreenshotsCommand();
 
-    expect(bundleBranch).toContain("command -v bundle");
-    expect(bundleBranch).toContain('bundle exec fastlane "$@"');
-    expect(bundleBranch).not.toContain("rbenv");
+    expect(result.status).toBe(0);
+    expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
+  });
+
+  it("fails closed when the repository bundle fails", () => {
+    const { result, trace } = runIosScreenshotsCommand({ bundleExit: 42 });
+
+    expect(result.status).toBe(42);
+    expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
+  });
+
+  it("allows an explicit ambient Fastlane opt-out", () => {
+    const { result, trace } = runIosScreenshotsCommand({ useAmbient: true });
+
+    expect(result.status).toBe(0);
+    expect(trace).toBe("ambient:--version\nambient:ios screenshots\n");
   });
 
   it("does not keep the old package release alias", () => {

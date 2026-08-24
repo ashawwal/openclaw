@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 
 run_ios_fastlane() {
-  if [[ -n "${BUNDLE_GEMFILE:-}" ]]; then
+  local gemfile="${BUNDLE_GEMFILE:-}"
+  if [[ "${OPENCLAW_IOS_FASTLANE_USE_AMBIENT:-0}" != "1" && -z "$gemfile" ]]; then
+    local repo_gemfile=""
+    repo_gemfile="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/apps/ios/Gemfile"
+    if [[ -f "$repo_gemfile" ]]; then
+      gemfile="$repo_gemfile"
+    fi
+  fi
+
+  if [[ "${OPENCLAW_IOS_FASTLANE_USE_AMBIENT:-0}" != "1" && -n "$gemfile" ]]; then
     if ! command -v bundle >/dev/null 2>&1; then
-      echo "bundle not found for BUNDLE_GEMFILE=${BUNDLE_GEMFILE}." >&2
+      echo "bundle not found for BUNDLE_GEMFILE=${gemfile}." >&2
       return 127
     fi
-    bundle exec fastlane "$@"
+    BUNDLE_GEMFILE="$gemfile" bundle exec fastlane "$@"
     return $?
   fi
 
