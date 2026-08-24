@@ -25,8 +25,9 @@ const CRABBOX_DESKTOP_PROVISION_TIMEOUT_MS =
 export const CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS = 30 * 60_000;
 // Fixed-lease inspection can follow warmup's final read; allow four one-minute retries.
 const CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS = 5 * 60_000;
+// Post-warmup ownership needs one authoritative inspect and one readiness recheck.
 const CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS =
-  CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS + CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS;
+  CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS + 2 * CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS;
 // Setup gets its own budget on top of provision so a slow warmup cannot starve it.
 export const CRABBOX_SETUP_TIMEOUT_MS = 300_000;
 export const CRABBOX_NODE_ENROLLMENT_TIMEOUT_MS = 15 * 60_000;
