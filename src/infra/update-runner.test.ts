@@ -52,28 +52,6 @@ function createRunner(responses: Record<string, CommandResponse>) {
   return { runner, calls };
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) {
-      return true;
-    }
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 5);
-    });
-  }
-  return !isProcessAlive(pid);
-}
-
 describe("resolveUpdateDoctorExecutionPolicy", () => {
   it("keeps fix mode when service repair is authorized", () => {
     expect(
@@ -196,55 +174,38 @@ describe("runGatewayUpdate", () => {
     await fs.writeFile(path.join(tempDir, "package.json"), JSON.stringify(pkg), "utf-8");
   }
 
-  it.runIf(process.platform !== "win32")(
-    "kills nested updater subprocesses when a default command times out",
-    { timeout: 10_000 },
-    async () => {
-      await setupGitCheckout();
-      const fakeBinDir = path.join(tempDir, "fake-bin");
-      const fakeGitPath = path.join(fakeBinDir, "git");
-      const childPidPath = path.join(tempDir, "nested-child.pid");
-      await fs.mkdir(fakeBinDir, { recursive: true });
-      await fs.writeFile(
-        fakeGitPath,
-        `#!${process.execPath}\n` +
-          `const { spawn } = require("node:child_process");\n` +
-          `const fs = require("node:fs");\n` +
-          `const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });\n` +
-          `fs.writeFileSync(process.env.OPENCLAW_UPDATE_TEST_CHILD_PID_PATH, String(child.pid));\n` +
-          `setInterval(() => {}, 1000);\n`,
-        "utf-8",
-      );
-      await fs.chmod(fakeGitPath, 0o755);
+  it("owns default updater subprocess trees", async () => {
+    const runCommandWithTimeoutMock = vi.fn(async () => ({
+      stdout: "",
+      stderr: "",
+      code: 0,
+      killed: false,
+      signal: null,
+    }));
+    vi.resetModules();
+    vi.doMock("../process/exec.js", () => ({ runCommandWithTimeout: runCommandWithTimeoutMock }));
+    vi.doMock("./update-global.js", () => ({
+      createGlobalInstallEnv: async () => ({ OPENCLAW_UPDATE_TEST_ENV: "1" }),
+    }));
 
-      // Keep install-surface candidates on the fixture root so this test exercises
-      // one timed-out process tree instead of repeating the timeout for Vitest's cwd.
-      const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(tempDir);
-      let childPid: number | null = null;
-      let childExited = false;
-      try {
-        await withEnvAsync(
-          {
-            OPENCLAW_UPDATE_TEST_CHILD_PID_PATH: childPidPath,
-            PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          },
-          async () => {
-            await resolveUpdateInstallSurface({ cwd: tempDir, timeoutMs: 500 });
-          },
-        );
-        childPid = Number.parseInt(await fs.readFile(childPidPath, "utf-8"), 10);
-        expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
-        childExited = await waitForProcessExit(childPid);
-      } finally {
-        cwdSpy.mockRestore();
-        if (childPid && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
-        }
-      }
+    try {
+      const { buildUpdateCommandRunner } = await import("./update-runner-command.js");
+      const { runCommand } = await buildUpdateCommandRunner();
 
-      expect(childExited).toBe(true);
-    },
-  );
+      await runCommand(["pnpm", "install"], { cwd: tempDir, timeoutMs: 500 });
+
+      expect(runCommandWithTimeoutMock).toHaveBeenCalledWith(["pnpm", "install"], {
+        cwd: tempDir,
+        env: { OPENCLAW_UPDATE_TEST_ENV: "1" },
+        killProcessTree: true,
+        timeoutMs: 500,
+      });
+    } finally {
+      vi.doUnmock("../process/exec.js");
+      vi.doUnmock("./update-global.js");
+      vi.resetModules();
+    }
+  });
 
   it.runIf(process.platform !== "win32")(
     "prefers the invoking pnpm 11 project over its shared-store cwd",

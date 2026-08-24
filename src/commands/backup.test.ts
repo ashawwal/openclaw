@@ -635,7 +635,7 @@ describe("backup commands", () => {
       const plan = await resolveBackupPlanFromDisk({ nowMs: 123 });
 
       expect(plan.included).toContainEqual(
-        expect.objectContaining({ kind: "workspace", sourcePath: workspaceDir }),
+        expect.objectContaining({ kind: "workspace", sourcePath: await fs.realpath(workspaceDir) }),
       );
       expect(await fs.readFile(configPath, "utf8")).toBe(originalRaw);
       expect(plan.configPath).toBe(configPath);
