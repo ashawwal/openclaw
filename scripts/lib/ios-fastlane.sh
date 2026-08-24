@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 
 run_ios_fastlane() {
+  if [[ -n "${BUNDLE_GEMFILE:-}" ]]; then
+    if ! command -v bundle >/dev/null 2>&1; then
+      echo "bundle not found for BUNDLE_GEMFILE=${BUNDLE_GEMFILE}." >&2
+      return 127
+    fi
+    bundle exec fastlane "$@"
+    return $?
+  fi
+
   if command -v fastlane >/dev/null 2>&1 && fastlane --version >/dev/null 2>&1; then
     fastlane "$@"
     return $?

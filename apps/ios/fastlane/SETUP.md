@@ -1,10 +1,16 @@
 # fastlane setup (OpenClaw iOS)
 
-Install:
+Install the pinned Ruby bundle:
 
 ```bash
-brew install fastlane
+cd apps/ios
+gem install bundler -v 2.6.9
+bundle _2.6.9_ install
 ```
+
+Fastlane is pinned in `apps/ios/Gemfile.lock`. Repository release wrappers use
+`bundle exec fastlane` whenever `BUNDLE_GEMFILE` is set; CI sets it to the
+absolute `apps/ios/Gemfile` path.
 
 Create an App Store Connect API key:
 
@@ -65,7 +71,7 @@ pnpm ios:release:signing:check
 pnpm ios:release:signing:setup
 ```
 
-`signing:setup` uses Fastlane `produce` and `modify_services` to create Developer Portal bundle IDs and enable required services before running `match`. The main app also requires App Attest, and the main app and share extension both require the shared App Group from `apps/ios/Config/AppStoreSigning.json`; associate that group with both bundle IDs in the Apple Developer Portal before regenerating profiles. If Fastlane does not already have a valid Apple Developer Portal session, run `fastlane spaceauth` for a release-owner Apple ID and export the resulting `FASTLANE_SESSION`.
+`signing:setup` uses Fastlane `produce` and `modify_services` to create Developer Portal bundle IDs and enable required services before running `match`. The main app also requires App Attest, and the main app and share extension both require the shared App Group from `apps/ios/Config/AppStoreSigning.json`; associate that group with both bundle IDs in the Apple Developer Portal before regenerating profiles. If Fastlane does not already have a valid Apple Developer Portal session, run `BUNDLE_GEMFILE="$PWD/apps/ios/Gemfile" bundle exec fastlane spaceauth` from the repository root for a release-owner Apple ID and export the resulting `FASTLANE_SESSION`.
 
 Shared encrypted signing storage:
 
@@ -82,7 +88,7 @@ Validate auth:
 
 ```bash
 cd apps/ios
-fastlane ios auth_check
+BUNDLE_GEMFILE="$PWD/Gemfile" bundle exec fastlane ios auth_check
 ```
 
 App Store Connect API auth is required when:
@@ -135,7 +141,7 @@ APP_STORE_CONNECT_KEYCHAIN_ACCOUNT=YOUR_MAC_USERNAME
 
 ```bash
 cd apps/ios
-fastlane ios auth_check
+BUNDLE_GEMFILE="$PWD/Gemfile" bundle exec fastlane ios auth_check
 ```
 
 4. Plan and cut the exact encoded-version changelog section:

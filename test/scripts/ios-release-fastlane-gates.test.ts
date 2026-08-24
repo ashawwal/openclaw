@@ -16,6 +16,9 @@ const snapshotUITestPath = path.join(
 );
 const rootTabsPath = path.join(process.cwd(), "apps", "ios", "Sources", "RootTabs.swift");
 const ciWorkflowPath = path.join(process.cwd(), ".github", "workflows", "ci.yml");
+const gemfilePath = path.join(process.cwd(), "apps", "ios", "Gemfile");
+const gemfileLockPath = path.join(process.cwd(), "apps", "ios", "Gemfile.lock");
+const fastlaneWrapperPath = path.join(process.cwd(), "scripts", "lib", "ios-fastlane.sh");
 
 function readFastfile(): string {
   return readFileSync(fastfilePath, "utf8");
@@ -58,6 +61,39 @@ function swiftFunctionBody(source: string, name: string): string {
 }
 
 describe("iOS Fastlane release upload gates", () => {
+  it("pins the CI Ruby and Fastlane toolchain", () => {
+    const workflow = readFileSync(ciWorkflowPath, "utf8");
+    const iosJobStart = workflow.indexOf("\n  ios-build:\n");
+    const iosJobEnd = workflow.indexOf("\n  android:\n", iosJobStart);
+    const iosJob = workflow.slice(iosJobStart, iosJobEnd);
+    const gemfile = readFileSync(gemfilePath, "utf8");
+    const lockfile = readFileSync(gemfileLockPath, "utf8");
+
+    expect(gemfile).toContain('gem "fastlane", "2.236.1"');
+    expect(lockfile).toContain("fastlane (2.236.1)");
+    expect(lockfile).toContain("arm64-darwin");
+    expect(lockfile).toContain("x86_64-darwin");
+    expect(lockfile).toContain("BUNDLED WITH\n   2.6.9");
+    expect(iosJob).toContain("BUNDLE_GEMFILE: ${{ github.workspace }}/apps/ios/Gemfile");
+    expect(iosJob).toContain("ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b");
+    expect(iosJob).toContain('ruby-version: "3.4.10"');
+    expect(iosJob).toContain('bundler: "2.6.9"');
+    expect(iosJob).toContain("bundler-cache: true");
+    expect(iosJob).toContain("working-directory: apps/ios");
+  });
+
+  it("uses the locked Fastlane bundle whenever BUNDLE_GEMFILE is set", () => {
+    const wrapper = readFileSync(fastlaneWrapperPath, "utf8");
+    const bundleBranch = wrapper.slice(
+      wrapper.indexOf('if [[ -n "${BUNDLE_GEMFILE:-}" ]]'),
+      wrapper.indexOf("if command -v fastlane"),
+    );
+
+    expect(bundleBranch).toContain("command -v bundle");
+    expect(bundleBranch).toContain('bundle exec fastlane "$@"');
+    expect(bundleBranch).not.toContain("rbenv");
+  });
+
   it("does not keep the old package release alias", () => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
       scripts?: Record<string, string>;
