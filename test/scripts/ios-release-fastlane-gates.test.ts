@@ -21,6 +21,14 @@ const ciWorkflowPath = path.join(process.cwd(), ".github", "workflows", "ci.yml"
 const rubyVersionPath = path.join(process.cwd(), "apps", "ios", ".ruby-version");
 const gemfilePath = path.join(process.cwd(), "apps", "ios", "Gemfile");
 const gemfileLockPath = path.join(process.cwd(), "apps", "ios", "Gemfile.lock");
+const metadataReadmePath = path.join(
+  process.cwd(),
+  "apps",
+  "ios",
+  "fastlane",
+  "metadata",
+  "README.md",
+);
 const screenshotsScriptPath = path.join(process.cwd(), "scripts", "ios-screenshots.sh");
 
 function runIosScreenshotsCommand(
@@ -131,6 +139,17 @@ describe("iOS Fastlane release upload gates", () => {
     expect(iosJob).toContain("bundle _2.6.9_ install --jobs 4 --retry 3");
     expect(iosJob).toContain("bundle _2.6.9_ check");
     expect(iosJob).toContain("bundle _2.6.9_ exec fastlane --version");
+  });
+
+  it("documents metadata commands through the pinned bundle", () => {
+    const metadataCommands = readFileSync(metadataReadmePath, "utf8")
+      .split("\n")
+      .filter((line) => line.includes("fastlane ios metadata"));
+
+    expect(metadataCommands).toHaveLength(3);
+    for (const command of metadataCommands) {
+      expect(command).toContain("bundle _2.6.9_ exec fastlane ios metadata");
+    }
   });
 
   it("prefers the repository bundle over an ambient Fastlane", () => {
