@@ -8,6 +8,7 @@ import {
 import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 
 const SESSION_COUNT = 2_640;
+const SESSION_WINDOW_COUNT = 300_000;
 const ACTIVE_SESSIONS = 40;
 const EVENTS_PER_SESSION = 128;
 const PAYLOAD = "x".repeat(48 * 1024);
@@ -58,6 +59,15 @@ const CHILD_SCRIPT = String.raw`
   }) + "\n");
   db.close();
 `;
+const SESSION_WINDOW_CHILD_SCRIPT = String.raw`
+  import { resolveOpenClawAgentSqlitePath } from "./src/state/openclaw-agent-db.ts";
+  import { migrateLegacyMediaPersistence } from "./src/infra/state-migrations.media-persistence.ts";
+  const path = resolveOpenClawAgentSqlitePath({ agentId: "main", env: process.env });
+  const migration = migrateLegacyMediaPersistence({
+    configuredAgentDatabaseTargets: [{ agentId: "main", path }], env: process.env,
+  });
+  process.stdout.write(JSON.stringify(migration) + "\n");
+`;
 
 function createCorpus(stateDir: string): void {
   const database = openOpenClawAgentDatabase({
@@ -105,7 +115,59 @@ function createCorpus(stateDir: string): void {
   closeOpenClawAgentDatabases();
 }
 
+function createSessionWindowCorpus(stateDir: string): void {
+  const database = openOpenClawAgentDatabase({
+    agentId: "main",
+    env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+  });
+  database.db.exec("BEGIN");
+  database.db
+    .prepare(`WITH RECURSIVE n(i) AS (
+    VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1 < ?
+  ) INSERT INTO session_nodes(session_key,current_session_id,entry_json,entry_valid,updated_at)
+    SELECT 'agent:main:window-'||i, 'window-'||i,
+      json_object('sessionId','window-'||i,'updatedAt',i+1), 1, i+1 FROM n`)
+    .run(SESSION_WINDOW_COUNT);
+  database.db
+    .prepare(`WITH RECURSIVE n(i) AS (
+    VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1 < ?
+  ) INSERT INTO session_windows(session_id,session_key,created_at,updated_at)
+    SELECT 'window-'||i, 'agent:main:window-'||i, i+1, i+1 FROM n`)
+    .run(SESSION_WINDOW_COUNT);
+  database.db.exec("COMMIT; UPDATE session_nodes SET entry_valid=1");
+  closeOpenClawAgentDatabases();
+}
+
 describe("legacy media persistence large corpus", () => {
+  it("does not materialize every session window under a 128 MiB old-space cap", () => {
+    const stateDir = tempDir.make("openclaw-media-session-windows-");
+    try {
+      createSessionWindowCorpus(stateDir);
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--max-old-space-size=128",
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "-e",
+          SESSION_WINDOW_CHILD_SCRIPT,
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+          timeout: 120_000,
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ changes: [], warnings: [] });
+    } finally {
+      closeOpenClawAgentDatabases();
+      closeOpenClawStateDatabase();
+    }
+  }, 130_000);
+
   it("rewrites bounded batches under a 256 MiB old-space cap", () => {
     const stateDir = tempDir.make("openclaw-media-corpus-");
     try {

@@ -121,11 +121,21 @@ function forEachMediaEventBatch(params: {
   visit: (sessionId: string, rows: Array<{ event_json: string; seq: number }>) => void;
 }): void {
   const db = getNodeSqliteKysely<MediaMigrationDatabase>(params.database);
-  const sessionIds = executeSqliteQuerySync(
-    params.database,
-    db.selectFrom(params.table).select("session_id").distinct().orderBy("session_id", "asc"),
-  ).rows.map((row) => row.session_id);
-  for (const sessionId of sessionIds) {
+  let afterSessionId: string | undefined;
+  while (true) {
+    let sessionQuery = db
+      .selectFrom(params.table)
+      .select("session_id")
+      .distinct()
+      .orderBy("session_id", "asc")
+      .limit(1);
+    if (afterSessionId !== undefined) {
+      sessionQuery = sessionQuery.where("session_id", ">", afterSessionId);
+    }
+    const sessionId = executeSqliteQuerySync(params.database, sessionQuery).rows[0]?.session_id;
+    if (sessionId === undefined) {
+      return;
+    }
     let afterSeq: number | undefined;
     while (true) {
       let query = db
@@ -144,6 +154,7 @@ function forEachMediaEventBatch(params: {
       params.visit(sessionId, rows);
       afterSeq = rows.at(-1)?.seq;
     }
+    afterSessionId = sessionId;
   }
 }
 
@@ -153,19 +164,27 @@ function scanTranscriptRows(params: {
   writer?: OpenClawAgentDatabase;
 }): number {
   const { database, pathname, writer } = params;
-  const db = getNodeSqliteKysely<MediaMigrationDatabase>(database);
-  const sessionRows = executeSqliteQuerySync(
-    database,
-    db.selectFrom("session_windows").select(["session_id", "session_key"]),
-  ).rows;
-  const sessionKeys = new Map(sessionRows.map((row) => [row.session_id, row.session_key]));
-  const changedSessionIds = new Set<string>();
+  const readSessionKey = database.prepare(
+    "SELECT session_key FROM session_windows WHERE session_id = ?",
+  );
+  let activeSessionId: string | undefined;
+  let activeSessionKey: string | undefined;
+  let activeSessionChanged = false;
+  let changedSessions = 0;
   forEachMediaEventBatch({
     database,
     table: "transcript_events",
     visit: (sessionId, rows) => {
-      const sessionKey = sessionKeys.get(sessionId);
-      if (!sessionKey) {
+      if (activeSessionId !== sessionId) {
+        const session = readSessionKey.get(sessionId);
+        if (!isRecord(session) || typeof session.session_key !== "string") {
+          throw new Error(`${pathname}:${sessionId} has transcript rows without a session window`);
+        }
+        activeSessionId = sessionId;
+        activeSessionKey = session.session_key;
+        activeSessionChanged = false;
+      }
+      if (!activeSessionKey) {
         throw new Error(`${pathname}:${sessionId} has transcript rows without a session window`);
       }
       const rewrites = rows.flatMap((row) => {
@@ -178,19 +197,22 @@ function scanTranscriptRows(params: {
         if (eventIdentity(event) !== eventIdentity(transformed.event)) {
           throw new Error(`${owner} event identity changed during media migration`);
         }
-        changedSessionIds.add(sessionId);
+        if (!activeSessionChanged) {
+          activeSessionChanged = true;
+          changedSessions += 1;
+        }
         return [{ event: transformed.event, expectedEventJson: row.event_json, seq: row.seq }];
       });
       if (writer && rewrites.length > 0) {
         rewriteSqliteTranscriptEventRowsInTransaction(
           writer,
-          { agentId: writer.agentId, path: pathname, sessionId, sessionKey },
+          { agentId: writer.agentId, path: pathname, sessionId, sessionKey: activeSessionKey },
           rewrites,
         );
       }
     },
   });
-  return changedSessionIds.size;
+  return changedSessions;
 }
 
 function rewriteTrajectoryEventJson(eventJson: string, owner: string): string {
