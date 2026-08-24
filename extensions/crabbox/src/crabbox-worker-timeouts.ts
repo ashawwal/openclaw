@@ -1,4 +1,5 @@
 type CrabboxProvisionTimeoutProfile = {
+  provider: string;
   desktop?: boolean;
   setup?: string;
 };
@@ -22,15 +23,26 @@ const CRABBOX_DESKTOP_PROVISION_TIMEOUT_MS =
   CRABBOX_DESKTOP_WARMUP_TIMEOUT_MS + CRABBOX_LIFECYCLE_TIMEOUT_MS;
 // The documented VM-create window precedes SSH readiness; observed readiness needs a bounded 30m.
 export const CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS = 30 * 60_000;
-export const CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS =
-  CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS + CRABBOX_LIFECYCLE_TIMEOUT_MS;
+// Exceed Machine0's one-minute read backoff while bounding inspect and stop recovery.
+const CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS = 3 * 60_000;
+const CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS =
+  CRABBOX_MACHINE0_WARMUP_TIMEOUT_MS + CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS;
 // Setup gets its own budget on top of provision so a slow warmup cannot starve it.
 export const CRABBOX_SETUP_TIMEOUT_MS = 300_000;
 export const CRABBOX_NODE_ENROLLMENT_TIMEOUT_MS = 15 * 60_000;
 
+export function resolveCrabboxLifecycleTimeoutMs(provider: string): number {
+  return provider === "machine0"
+    ? CRABBOX_MACHINE0_LIFECYCLE_TIMEOUT_MS
+    : CRABBOX_LIFECYCLE_TIMEOUT_MS;
+}
+
 export function resolveCrabboxProvisionBaseTimeoutMs(
   profile: CrabboxProvisionTimeoutProfile,
 ): number {
+  if (profile.provider === "machine0") {
+    return CRABBOX_MACHINE0_PROVISION_TIMEOUT_MS;
+  }
   return profile.desktop ? CRABBOX_DESKTOP_PROVISION_TIMEOUT_MS : CRABBOX_PROVISION_TIMEOUT_MS;
 }
 

@@ -1592,12 +1592,27 @@ describe("Crabbox worker provider", () => {
   );
 
   it.each([
-    { providerId: "aws", warmupTimeoutMs: 240_000, provisionTimeoutMs: 1_250_000 },
-    { providerId: "hetzner", warmupTimeoutMs: 240_000, provisionTimeoutMs: 1_250_000 },
-    { providerId: "machine0", warmupTimeoutMs: 30 * 60_000, provisionTimeoutMs: 47 * 60_000 },
+    {
+      providerId: "aws",
+      warmupTimeoutMs: 240_000,
+      lifecycleTimeoutMs: 60_000,
+      provisionTimeoutMs: 1_250_000,
+    },
+    {
+      providerId: "hetzner",
+      warmupTimeoutMs: 240_000,
+      lifecycleTimeoutMs: 60_000,
+      provisionTimeoutMs: 1_250_000,
+    },
+    {
+      providerId: "machine0",
+      warmupTimeoutMs: 30 * 60_000,
+      lifecycleTimeoutMs: 3 * 60_000,
+      provisionTimeoutMs: 49 * 60_000,
+    },
   ])(
     "runs one fixed $providerId warmup, ignores its output, and inspects only the canonical id",
-    async ({ providerId, warmupTimeoutMs, provisionTimeoutMs }) => {
+    async ({ providerId, warmupTimeoutMs, lifecycleTimeoutMs, provisionTimeoutMs }) => {
       const calls: Array<{ argv: string[]; options: Parameters<CrabboxCommandRunner>[1] }> = [];
       const provider = providerWithRunner(async (argv, options) => {
         calls.push({ argv, options });
@@ -1653,6 +1668,7 @@ describe("Crabbox worker provider", () => {
         LEASE_ID,
         "--json",
       ]);
+      expect(calls[1]?.options.timeoutMs).toBe(lifecycleTimeoutMs);
       expect(calls[2]?.argv[1]).toBe("run");
       expect(String(calls[2]?.options.input)).toContain("openclaw@2026.8.1");
       expect(String(calls[2]?.options.input)).toContain(
@@ -1681,6 +1697,15 @@ describe("Crabbox worker provider", () => {
       );
       expect(calls[2]?.argv.join(" ")).not.toContain("setup-code");
       expect(calls[3]?.argv[1]).toBe("inspect");
+      expect(calls[3]?.options.timeoutMs).toBe(lifecycleTimeoutMs);
+
+      const lease = lifecycleLease(LEASE_ID, profile);
+      await expect(provider.inspect(lease)).resolves.toEqual({ status: "active" });
+      await expect(provider.destroy(lease)).resolves.toBeUndefined();
+      expect(calls.slice(4).map(({ argv, options }) => [argv[1], options.timeoutMs])).toEqual([
+        ["inspect", lifecycleTimeoutMs],
+        ["stop", lifecycleTimeoutMs],
+      ]);
     },
   );
 
@@ -1779,47 +1804,68 @@ describe("Crabbox worker provider", () => {
     expect(calls.at(-1)).toEqual([SIBLING_BINARY, "stop", "--provider", "aws", "--id", LEASE_ID]);
   });
 
-  it("stops a committed fixed lease after inspect timeout without provisioning replay", async () => {
-    const calls: string[][] = [];
-    const live = new Set<string>();
-    let creates = 0;
-    let inspections = 0;
-    const runCommand: CrabboxCommandRunner = async (argv) => {
-      calls.push(argv);
-      const idFlag = argv.indexOf("--id");
-      const leaseIdFlag = argv.indexOf("--lease-id");
-      const id = argv[idFlag >= 0 ? idFlag + 1 : leaseIdFlag + 1] ?? "";
-      if (argv[1] === "warmup") {
-        if (!live.has(id)) {
-          creates += 1;
-          live.add(id);
+  it.each([
+    { providerId: "aws", lifecycleTimeoutMs: 60_000 },
+    { providerId: "hetzner", lifecycleTimeoutMs: 60_000 },
+    { providerId: "machine0", lifecycleTimeoutMs: 180_000 },
+  ])(
+    "stops a committed fixed $providerId lease after inspect timeout without provisioning replay",
+    async ({ providerId, lifecycleTimeoutMs }) => {
+      const calls: string[][] = [];
+      const lifecycleTimeouts: number[] = [];
+      const live = new Set<string>();
+      let creates = 0;
+      let inspections = 0;
+      const runCommand: CrabboxCommandRunner = async (argv, options) => {
+        calls.push(argv);
+        const idFlag = argv.indexOf("--id");
+        const leaseIdFlag = argv.indexOf("--lease-id");
+        const id = argv[idFlag >= 0 ? idFlag + 1 : leaseIdFlag + 1] ?? "";
+        if (argv[1] === "warmup") {
+          if (!live.has(id)) {
+            creates += 1;
+            live.add(id);
+          }
+          return commandResult();
         }
-        return commandResult();
-      }
-      if (argv[1] === "inspect") {
-        inspections += 1;
-        return inspections === 1
-          ? commandResult({ code: null, killed: true, termination: "timeout" })
-          : commandResult({ stdout: inspectJson({ id, sshHostKey: HOST_KEY }) });
-      }
-      if (argv[1] === "run") {
-        return commandResult();
-      }
-      if (argv[1] === "stop") {
-        live.delete(id);
-        return commandResult();
-      }
-      throw new Error(`unexpected Crabbox command: ${argv[1]}`);
-    };
+        if (argv[1] === "inspect") {
+          lifecycleTimeouts.push(options.timeoutMs);
+          inspections += 1;
+          return inspections === 1
+            ? commandResult({ code: null, killed: true, termination: "timeout" })
+            : commandResult({ stdout: inspectJson({ id, sshHostKey: HOST_KEY }) });
+        }
+        if (argv[1] === "run") {
+          return commandResult();
+        }
+        if (argv[1] === "stop") {
+          lifecycleTimeouts.push(options.timeoutMs);
+          live.delete(id);
+          return commandResult();
+        }
+        throw new Error(`unexpected Crabbox command: ${argv[1]}`);
+      };
 
-    await expect(providerWithRunner(runCommand).provision(PROFILE, OPERATION_ID)).rejects.toThrow(
-      "did not exit normally (timeout)",
-    );
-    expect(creates).toBe(1);
-    expect(live.size).toBe(0);
-    expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect", "stop"]);
-    expect(calls.at(-1)).toEqual([SIBLING_BINARY, "stop", "--provider", "aws", "--id", LEASE_ID]);
-  });
+      await expect(
+        providerWithRunner(runCommand).provision(
+          { ...PROFILE, provider: providerId },
+          OPERATION_ID,
+        ),
+      ).rejects.toThrow("did not exit normally (timeout)");
+      expect(creates).toBe(1);
+      expect(live.size).toBe(0);
+      expect(lifecycleTimeouts).toEqual([lifecycleTimeoutMs, lifecycleTimeoutMs]);
+      expect(calls.map((argv) => argv[1])).toEqual(["warmup", "inspect", "stop"]);
+      expect(calls.at(-1)).toEqual([
+        SIBLING_BINARY,
+        "stop",
+        "--provider",
+        providerId,
+        "--id",
+        LEASE_ID,
+      ]);
+    },
+  );
 
   it.each([
     [
