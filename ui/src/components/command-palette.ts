@@ -572,7 +572,10 @@ export class CommandPalette extends OpenClawLightDomContentsElement {
         return;
       }
       const transcriptResult = transcriptOutcome?.result ?? null;
-      this.sessionSearchPartial = transcriptOutcome?.error === true;
+      this.sessionSearchPartial =
+        transcriptOutcome?.error === true ||
+        transcriptResult?.indexing === true ||
+        transcriptResult?.truncated === true;
       const transcriptHitByKey = new Map<string, SessionsSearchHit>();
       for (const hit of transcriptResult?.results ?? []) {
         if (!transcriptHitByKey.has(hit.sessionKey)) {

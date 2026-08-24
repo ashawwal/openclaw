@@ -43,13 +43,17 @@ export async function searchVisibleSessionTranscripts(params: {
           }
           const rows = params.mapPageRows?.(result.sessions) ?? result.sessions;
           for (const row of rows) {
-            rowsByKey.set(row.key, row);
-            if (rowsByKey.size >= maxSessionKeys) {
+            if (!rowsByKey.has(row.key) && rowsByKey.size >= maxSessionKeys) {
               rosterTruncated = true;
               return [...rowsByKey.values()];
             }
+            rowsByKey.set(row.key, row);
           }
           if (!result.hasMore) {
+            return [...rowsByKey.values()];
+          }
+          if (rowsByKey.size >= maxSessionKeys) {
+            rosterTruncated = true;
             return [...rowsByKey.values()];
           }
           const nextOffset = result.nextOffset ?? offset + result.sessions.length;

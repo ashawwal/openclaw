@@ -118,6 +118,34 @@ describe("searchVisibleSessionTranscripts", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("does not truncate a terminal roster at the exact key cap", async () => {
+    const request = vi.fn(async (_method: string, _params: unknown) => ({ results: [] }));
+    const sessions = Array.from(
+      { length: 200 },
+      (_, index) => ({ key: `agent:main:session-${index}` }) as GatewaySessionRow,
+    );
+    const listSessions = vi.fn(async () => ({
+      count: sessions.length,
+      totalCount: sessions.length,
+      sessions,
+      hasMore: false,
+    })) as unknown as (options: unknown) => Promise<SessionsListResult>;
+
+    const result = await searchVisibleSessionTranscripts({
+      client: { request } as unknown as GatewayBrowserClient,
+      query: "needle",
+      listSessions,
+      listOptions: {},
+      resolveAgentId: () => "main",
+      maxListPages: 4,
+      maxSearchRequests: 4,
+      maxSessionKeys: 200,
+    });
+
+    expect(result.sessions).toHaveLength(200);
+    expect(result.truncated).toBe(false);
+  });
+
   it("recovers a moving thread when a later page omits the authoritative total", async () => {
     const first = { key: "agent:main:first" } as GatewaySessionRow;
     const moved = { key: "agent:main:moved" } as GatewaySessionRow;

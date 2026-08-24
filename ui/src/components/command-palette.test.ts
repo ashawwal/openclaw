@@ -334,6 +334,30 @@ describe("CommandPalette lifecycle", () => {
     expect(palette.textContent).not.toContain("Chat search failed");
   });
 
+  it.each([
+    { state: "indexing", response: { indexing: true } },
+    { state: "truncated", response: { truncated: true } },
+  ])("shows a partial-search notice when transcript results are $state", async ({ response }) => {
+    const metadata = createSessionResult("agent:main:metadata", "Needle planning");
+    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async () => metadata);
+    const request = vi.fn(async () => ({ results: [], ...response }));
+    const { gateway } = createGateway(true, {
+      methods: ["sessions.search"],
+      request: request as GatewayBrowserClient["request"],
+    });
+    const { palette } = await mountPalette(createContext(gateway, list));
+
+    await enterQuery(palette, "needle");
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await palette.updateComplete;
+
+    expect(palette.textContent).toContain(
+      "Transcript search unavailable — showing chat titles and metadata",
+    );
+    expect(palette.textContent).toContain("Needle planning");
+  });
+
   it("lazily searches automation names and descriptions once per connection", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "cron.list") {
