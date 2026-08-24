@@ -17,12 +17,12 @@ run_ios_fastlane() {
       echo "$setup_hint" >&2
       return 127
     fi
-    if ! BUNDLE_GEMFILE="$gemfile" bundle check >/dev/null 2>&1; then
+    if ! BUNDLE_GEMFILE="$gemfile" bundle _2.6.9_ check >/dev/null 2>&1; then
       echo "The iOS Fastlane bundle is not installed for ${gemfile}." >&2
       echo "$setup_hint" >&2
       return 1
     fi
-    BUNDLE_GEMFILE="$gemfile" bundle exec fastlane "$@"
+    BUNDLE_GEMFILE="$gemfile" bundle _2.6.9_ exec fastlane "$@"
     return $?
   fi
 

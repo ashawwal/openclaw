@@ -59,7 +59,8 @@ function runIosScreenshotsCommand(
   writeExecutable(
     "bundle",
     '[[ "$BUNDLE_GEMFILE" == "$OPENCLAW_FASTLANE_EXPECTED_GEMFILE" ]] || exit 91\n' +
-      `[[ "\${1:-}" != "check" ]] || exit ${options.bundleCheckExit ?? 0}\n` +
+      '[[ "${1:-}" == "_2.6.9_" ]] || exit 92\n' +
+      `[[ "\${2:-}" != "check" ]] || exit ${options.bundleCheckExit ?? 0}\n` +
       'printf "bundle:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n' +
       `exit ${options.bundleExit ?? 0}`,
   );
@@ -173,14 +174,14 @@ describe("iOS Fastlane release upload gates", () => {
     const { result, trace } = runIosScreenshotsCommand();
 
     expect(result.status).toBe(0);
-    expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
+    expect(trace).toBe("bundle:_2.6.9_ exec fastlane ios screenshots\n");
   });
 
   it("fails closed when the repository bundle fails", () => {
     const { result, trace } = runIosScreenshotsCommand({ bundleExit: 42 });
 
     expect(result.status).toBe(42);
-    expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
+    expect(trace).toBe("bundle:_2.6.9_ exec fastlane ios screenshots\n");
   });
 
   it("prints the pinned setup command when the repository bundle is unavailable", () => {
@@ -197,7 +198,7 @@ describe("iOS Fastlane release upload gates", () => {
     const { result, trace } = runIosScreenshotsCommand({ conflictingGemfile: true });
 
     expect(result.status).toBe(0);
-    expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
+    expect(trace).toBe("bundle:_2.6.9_ exec fastlane ios screenshots\n");
   });
 
   it("uses ambient Fastlane only when the repository Gemfile is absent", () => {
