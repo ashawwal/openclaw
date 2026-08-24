@@ -161,12 +161,46 @@ describe("iOS Fastlane release upload gates", () => {
       (documentationPath) =>
         readFileSync(documentationPath, "utf8")
           .split("\n")
-          .filter((line) => /\bfastlane ios [a-z_]+\b/u.test(line)),
+          .filter((line) => /\bfastlane (?:ios [a-z_]+|spaceauth)\b/u.test(line)),
     );
 
-    expect(documentedCommands).toHaveLength(6);
+    expect(documentedCommands).toHaveLength(7);
     for (const command of documentedCommands) {
-      expect(command).toContain("bundle _2.6.9_ exec fastlane ios");
+      expect(command).toContain('BUNDLE_GEMFILE="$PWD/Gemfile" bundle _2.6.9_ exec fastlane');
+    }
+  });
+
+  it("documents a direct Fastlane command that rejects an inherited Gemfile", () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), "openclaw-ios-fastlane-docs-"));
+    const bundlePath = path.join(fixture, "bundle");
+    const tracePath = path.join(fixture, "trace.log");
+    writeFileSync(
+      bundlePath,
+      '#!/usr/bin/env bash\nprintf "%s\\n" "$BUNDLE_GEMFILE" > "$OPENCLAW_FASTLANE_TEST_TRACE"\n',
+      "utf8",
+    );
+    chmodSync(bundlePath, 0o755);
+
+    try {
+      const result = spawnSync(
+        "bash",
+        ["-c", 'BUNDLE_GEMFILE="$PWD/Gemfile" bundle _2.6.9_ exec fastlane ios auth_check'],
+        {
+          cwd: path.join(process.cwd(), "apps", "ios"),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            BUNDLE_GEMFILE: path.join(fixture, "Gemfile"),
+            OPENCLAW_FASTLANE_TEST_TRACE: tracePath,
+            PATH: `${fixture}:/usr/bin:/bin`,
+          },
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(readFileSync(tracePath, "utf8")).toBe(`${gemfilePath}\n`);
+    } finally {
+      rmSync(fixture, { force: true, recursive: true });
     }
   });
 
