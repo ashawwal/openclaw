@@ -659,6 +659,7 @@ export function shouldDropAssistantHistoryMessage(message: unknown): boolean {
 export function sanitizeChatHistoryMessages(
   messages: unknown[],
   maxChars: number = DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS,
+  opts?: { includeCommentaryFallbacks?: boolean },
 ): unknown[] {
   if (messages.length === 0) {
     return messages;
@@ -666,10 +667,12 @@ export function sanitizeChatHistoryMessages(
   let changed = false;
   const next: unknown[] = [];
   for (const message of messages) {
-    for (const commentary of projectAssistantCommentaryFallbacks(message, maxChars)) {
-      const projected = sanitizeChatHistoryMessage(commentary, maxChars);
-      next.push(projected.message);
-      changed = true;
+    if (opts?.includeCommentaryFallbacks === true) {
+      for (const commentary of projectAssistantCommentaryFallbacks(message, maxChars)) {
+        const projected = sanitizeChatHistoryMessage(commentary, maxChars);
+        next.push(projected.message);
+        changed = true;
+      }
     }
     if (shouldDropAssistantHistoryMessage(message)) {
       changed = true;

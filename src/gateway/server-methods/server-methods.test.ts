@@ -1028,21 +1028,25 @@ describe("sanitizeChatHistoryMessages", () => {
   });
 
   it("projects keyed commentary entries into durable preamble rows", () => {
-    const result = sanitizeChatHistoryMessages([
-      userHistoryMessage("hello", { timestamp: 1 }),
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "text",
-            text: "thinking like caveman",
-            textSignature: JSON.stringify({ v: 1, id: "msg_commentary", phase: "commentary" }),
-          },
-        ],
-        timestamp: 2,
-      },
-      assistantHistoryMessage("real reply", { timestamp: 3 }),
-    ]);
+    const result = sanitizeChatHistoryMessages(
+      [
+        userHistoryMessage("hello", { timestamp: 1 }),
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "thinking like caveman",
+              textSignature: JSON.stringify({ v: 1, id: "msg_commentary", phase: "commentary" }),
+            },
+          ],
+          timestamp: 2,
+        },
+        assistantHistoryMessage("real reply", { timestamp: 3 }),
+      ],
+      undefined,
+      { includeCommentaryFallbacks: true },
+    );
 
     expect(result).toEqual([
       userHistoryMessage("hello", { timestamp: 1 }),
@@ -1081,6 +1085,7 @@ describe("sanitizeChatHistoryMessages", () => {
         },
       ],
       12,
+      { includeCommentaryFallbacks: true },
     ) as Array<{
       content: Array<{ text: string }>;
       openclawStreamFallback: { replacementText: string };
@@ -1097,25 +1102,29 @@ describe("sanitizeChatHistoryMessages", () => {
       name: "read",
       arguments: { path: "README.md" },
     };
-    const result = sanitizeChatHistoryMessages([
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "text",
-            text: "Checking the file",
-            textSignature: JSON.stringify({ v: 1, id: "msg_commentary", phase: "commentary" }),
-          },
-          toolCall,
-          {
-            type: "text",
-            text: "Done.",
-            textSignature: JSON.stringify({ v: 1, id: "msg_final", phase: "final_answer" }),
-          },
-        ],
-        timestamp: 2,
-      },
-    ]);
+    const result = sanitizeChatHistoryMessages(
+      [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "Checking the file",
+              textSignature: JSON.stringify({ v: 1, id: "msg_commentary", phase: "commentary" }),
+            },
+            toolCall,
+            {
+              type: "text",
+              text: "Done.",
+              textSignature: JSON.stringify({ v: 1, id: "msg_final", phase: "final_answer" }),
+            },
+          ],
+          timestamp: 2,
+        },
+      ],
+      undefined,
+      { includeCommentaryFallbacks: true },
+    );
 
     expect(result).toEqual([
       {
@@ -1839,39 +1848,42 @@ describe("projectRecentChatDisplayMessages", () => {
   });
 
   it("preserves structured trace alongside visible assistant progress text", () => {
-    const result = projectRecentChatDisplayMessages([
-      userHistoryMessage("fix it", { timestamp: 1 }),
-      {
-        role: "assistant",
-        content: [
-          { type: "thinking", thinking: "private reasoning" },
-          {
-            type: "text",
-            text: "I will clean that up now.",
-            textSignature: JSON.stringify({
-              v: 1,
-              id: "msg-progress",
-              phase: "commentary",
-            }),
-          },
-          {
-            type: "toolCall",
-            id: "call-read",
-            name: "read",
-            arguments: { path: "AGENTS.md" },
-          },
-        ],
-        timestamp: 2,
-        __openclaw: { seq: 2 },
-      },
-      {
-        role: "toolResult",
-        toolCallId: "call-read",
-        toolName: "read",
-        content: [{ type: "text", text: "file contents" }],
-        timestamp: 3,
-      },
-    ]);
+    const result = projectRecentChatDisplayMessages(
+      [
+        userHistoryMessage("fix it", { timestamp: 1 }),
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private reasoning" },
+            {
+              type: "text",
+              text: "I will clean that up now.",
+              textSignature: JSON.stringify({
+                v: 1,
+                id: "msg-progress",
+                phase: "commentary",
+              }),
+            },
+            {
+              type: "toolCall",
+              id: "call-read",
+              name: "read",
+              arguments: { path: "AGENTS.md" },
+            },
+          ],
+          timestamp: 2,
+          __openclaw: { seq: 2 },
+        },
+        {
+          role: "toolResult",
+          toolCallId: "call-read",
+          toolName: "read",
+          content: [{ type: "text", text: "file contents" }],
+          timestamp: 3,
+        },
+      ],
+      { includeCommentaryFallbacks: true },
+    );
 
     expect(result.slice(1, 3)).toEqual([
       {
@@ -1902,24 +1914,27 @@ describe("projectRecentChatDisplayMessages", () => {
   });
 
   it("projects pure keyed commentary as a durable preamble", () => {
-    const result = projectRecentChatDisplayMessages([
-      userHistoryMessage("status", { timestamp: 1 }),
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "text",
-            text: "Working...",
-            textSignature: JSON.stringify({
-              v: 1,
-              id: "msg-commentary",
-              phase: "commentary",
-            }),
-          },
-        ],
-        timestamp: 2,
-      },
-    ]);
+    const result = projectRecentChatDisplayMessages(
+      [
+        userHistoryMessage("status", { timestamp: 1 }),
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "Working...",
+              textSignature: JSON.stringify({
+                v: 1,
+                id: "msg-commentary",
+                phase: "commentary",
+              }),
+            },
+          ],
+          timestamp: 2,
+        },
+      ],
+      { includeCommentaryFallbacks: true },
+    );
 
     expect(result).toEqual([
       userHistoryMessage("status", { timestamp: 1 }),
