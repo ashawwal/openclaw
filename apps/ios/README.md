@@ -144,7 +144,7 @@ Use this when a clone is missing local iOS release setup and you want the shorte
 
 ```bash
 cd apps/ios
-fastlane ios auth_check
+bundle _2.6.9_ exec fastlane ios auth_check
 ```
 
 2. If auth is missing, bootstrap it once on this Mac:

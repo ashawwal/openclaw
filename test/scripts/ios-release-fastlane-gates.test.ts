@@ -21,6 +21,8 @@ const ciWorkflowPath = path.join(process.cwd(), ".github", "workflows", "ci.yml"
 const rubyVersionPath = path.join(process.cwd(), "apps", "ios", ".ruby-version");
 const gemfilePath = path.join(process.cwd(), "apps", "ios", "Gemfile");
 const gemfileLockPath = path.join(process.cwd(), "apps", "ios", "Gemfile.lock");
+const iosReadmePath = path.join(process.cwd(), "apps", "ios", "README.md");
+const fastlaneSetupPath = path.join(process.cwd(), "apps", "ios", "fastlane", "SETUP.md");
 const metadataReadmePath = path.join(
   process.cwd(),
   "apps",
@@ -141,14 +143,17 @@ describe("iOS Fastlane release upload gates", () => {
     expect(iosJob).toContain("bundle _2.6.9_ exec fastlane --version");
   });
 
-  it("documents metadata commands through the pinned bundle", () => {
-    const metadataCommands = readFileSync(metadataReadmePath, "utf8")
-      .split("\n")
-      .filter((line) => line.includes("fastlane ios metadata"));
+  it("documents every iOS Fastlane command through the pinned bundle", () => {
+    const documentedCommands = [iosReadmePath, fastlaneSetupPath, metadataReadmePath].flatMap(
+      (documentationPath) =>
+        readFileSync(documentationPath, "utf8")
+          .split("\n")
+          .filter((line) => /\bfastlane ios [a-z_]+\b/u.test(line)),
+    );
 
-    expect(metadataCommands).toHaveLength(3);
-    for (const command of metadataCommands) {
-      expect(command).toContain("bundle _2.6.9_ exec fastlane ios metadata");
+    expect(documentedCommands).toHaveLength(6);
+    for (const command of documentedCommands) {
+      expect(command).toContain("bundle _2.6.9_ exec fastlane ios");
     }
   });
 
