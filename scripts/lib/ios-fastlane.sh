@@ -2,7 +2,7 @@
 
 run_ios_fastlane() {
   local gemfile="${BUNDLE_GEMFILE:-}"
-  if [[ "${OPENCLAW_IOS_FASTLANE_USE_AMBIENT:-0}" != "1" && -z "$gemfile" ]]; then
+  if [[ "${OPENCLAW_IOS_FASTLANE_USE_AMBIENT:-0}" != "1" ]]; then
     local repo_gemfile=""
     repo_gemfile="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/apps/ios/Gemfile"
     if [[ -f "$repo_gemfile" ]]; then

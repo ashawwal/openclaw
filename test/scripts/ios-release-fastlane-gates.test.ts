@@ -36,6 +36,7 @@ const screenshotsScriptPath = path.join(process.cwd(), "scripts", "ios-screensho
 function runIosScreenshotsCommand(
   options: {
     bundleExit?: number;
+    conflictingGemfile?: boolean;
     useAmbient?: boolean;
   } = {},
 ) {
@@ -48,7 +49,8 @@ function runIosScreenshotsCommand(
   };
   writeExecutable(
     "bundle",
-    'printf "bundle:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n' +
+    '[[ "$BUNDLE_GEMFILE" == "$OPENCLAW_FASTLANE_EXPECTED_GEMFILE" ]] || exit 91\n' +
+      'printf "bundle:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"\n' +
       `exit ${options.bundleExit ?? 0}`,
   );
   writeExecutable("fastlane", 'printf "ambient:%s\\n" "$*" >> "$OPENCLAW_FASTLANE_TEST_TRACE"');
@@ -58,7 +60,8 @@ function runIosScreenshotsCommand(
       encoding: "utf8",
       env: {
         ...process.env,
-        BUNDLE_GEMFILE: "",
+        BUNDLE_GEMFILE: options.conflictingGemfile ? path.join(fixture, "Gemfile") : "",
+        OPENCLAW_FASTLANE_EXPECTED_GEMFILE: gemfilePath,
         OPENCLAW_FASTLANE_TEST_TRACE: tracePath,
         OPENCLAW_IOS_FASTLANE_USE_AMBIENT: options.useAmbient ? "1" : "0",
         PATH: `${fixture}:/usr/bin:/bin`,
@@ -168,6 +171,13 @@ describe("iOS Fastlane release upload gates", () => {
     const { result, trace } = runIosScreenshotsCommand({ bundleExit: 42 });
 
     expect(result.status).toBe(42);
+    expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
+  });
+
+  it("ignores a conflicting inherited Gemfile on the pinned path", () => {
+    const { result, trace } = runIosScreenshotsCommand({ conflictingGemfile: true });
+
+    expect(result.status).toBe(0);
     expect(trace).toBe("bundle:exec fastlane ios screenshots\n");
   });
 
