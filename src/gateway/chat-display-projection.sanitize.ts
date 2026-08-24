@@ -261,9 +261,12 @@ function projectAssistantMixedToolContent(
     if (!block || typeof block !== "object") {
       continue;
     }
-    const entry = block as { type?: unknown; text?: unknown };
+    const entry = block as { type?: unknown; text?: unknown; textSignature?: unknown };
     if (!isAssistantTextContentType(entry.type)) {
       projectedContent.push(block);
+      continue;
+    }
+    if (parseAssistantTextSignature(entry)?.phase === "commentary") {
       continue;
     }
     if (typeof entry.text !== "string" || !entry.text.trim()) {
@@ -279,6 +282,53 @@ function projectAssistantMixedToolContent(
   // Mixed messages supply both the visible bubble and its reasoning/tool trace.
   // Keep structured siblings or a history reload loses activity shown while live.
   return hasVisibleText ? { content: projectedContent, changed: true } : null;
+}
+
+function projectAssistantCommentaryFallbacks(message: unknown, maxChars: number): unknown[] {
+  if (!message || typeof message !== "object") {
+    return [];
+  }
+  const entry = readRecord(message);
+  if (
+    !entry ||
+    entry.role !== "assistant" ||
+    !Array.isArray(entry.content) ||
+    entry.stopReason === "error" ||
+    typeof entry.errorMessage === "string"
+  ) {
+    return [];
+  }
+  return entry.content.flatMap((block) => {
+    const content = readRecord(block);
+    if (!content) {
+      return [];
+    }
+    const signature = parseAssistantTextSignature(content);
+    const text = typeof content.text === "string" ? content.text : "";
+    const itemId = signature?.id?.trim();
+    if (
+      !isAssistantTextContentType(content.type) ||
+      signature?.phase !== "commentary" ||
+      !itemId ||
+      !text.trim()
+    ) {
+      return [];
+    }
+    const projected = truncateChatHistoryText(text, maxChars);
+    return [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: projected.text }],
+        ...(typeof entry.timestamp === "number" ? { timestamp: entry.timestamp } : {}),
+        openclawStreamFallback: {
+          replacementText: projected.text,
+          source: "segment",
+          itemId,
+        },
+        ...(projected.truncated ? { __openclaw: { truncated: true, reason: "display-cap" } } : {}),
+      },
+    ];
+  });
 }
 
 function sanitizeCost(raw: unknown): Record<string, number> | undefined {
@@ -616,6 +666,11 @@ export function sanitizeChatHistoryMessages(
   let changed = false;
   const next: unknown[] = [];
   for (const message of messages) {
+    for (const commentary of projectAssistantCommentaryFallbacks(message, maxChars)) {
+      const projected = sanitizeChatHistoryMessage(commentary, maxChars);
+      next.push(projected.message);
+      changed = true;
+    }
     if (shouldDropAssistantHistoryMessage(message)) {
       changed = true;
       continue;

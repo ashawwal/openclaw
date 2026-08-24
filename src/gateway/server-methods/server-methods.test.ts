@@ -1027,7 +1027,7 @@ describe("sanitizeChatHistoryMessages", () => {
     ]);
   });
 
-  it("drops commentary-only assistant entries when phase exists only in textSignature", () => {
+  it("projects keyed commentary entries into durable preamble rows", () => {
     const result = sanitizeChatHistoryMessages([
       userHistoryMessage("hello", { timestamp: 1 }),
       {
@@ -1046,7 +1046,93 @@ describe("sanitizeChatHistoryMessages", () => {
 
     expect(result).toEqual([
       userHistoryMessage("hello", { timestamp: 1 }),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "thinking like caveman" }],
+        timestamp: 2,
+        openclawStreamFallback: {
+          replacementText: "thinking like caveman",
+          source: "segment",
+          itemId: "msg_commentary",
+        },
+      },
       assistantHistoryMessage("real reply", { timestamp: 3 }),
+    ]);
+  });
+
+  it("uses one capped text value for commentary content and fallback metadata", () => {
+    const fullText = "A long commentary message that must be capped";
+    const [fallback] = sanitizeChatHistoryMessages(
+      [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: fullText,
+              textSignature: JSON.stringify({
+                v: 1,
+                id: "msg_commentary",
+                phase: "commentary",
+              }),
+            },
+          ],
+          timestamp: 2,
+        },
+      ],
+      12,
+    ) as Array<{
+      content: Array<{ text: string }>;
+      openclawStreamFallback: { replacementText: string };
+    }>;
+
+    expect(fallback?.openclawStreamFallback.replacementText).toBe(fallback?.content[0]?.text);
+    expect(fallback?.openclawStreamFallback.replacementText).not.toBe(fullText);
+  });
+
+  it("splits commentary from final text and tool history", () => {
+    const toolCall = {
+      type: "toolCall",
+      id: "call-1",
+      name: "read",
+      arguments: { path: "README.md" },
+    };
+    const result = sanitizeChatHistoryMessages([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "Checking the file",
+            textSignature: JSON.stringify({ v: 1, id: "msg_commentary", phase: "commentary" }),
+          },
+          toolCall,
+          {
+            type: "text",
+            text: "Done.",
+            textSignature: JSON.stringify({ v: 1, id: "msg_final", phase: "final_answer" }),
+          },
+        ],
+        timestamp: 2,
+      },
+    ]);
+
+    expect(result).toEqual([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Checking the file" }],
+        timestamp: 2,
+        openclawStreamFallback: {
+          replacementText: "Checking the file",
+          source: "segment",
+          itemId: "msg_commentary",
+        },
+      },
+      {
+        role: "assistant",
+        content: [toolCall, { type: "text", text: "Done." }],
+        timestamp: 2,
+      },
     ]);
   });
 });
@@ -1787,24 +1873,35 @@ describe("projectRecentChatDisplayMessages", () => {
       },
     ]);
 
-    expect(result[1]).toEqual({
-      role: "assistant",
-      content: [
-        { type: "thinking", thinking: "private reasoning" },
-        { type: "text", text: "I will clean that up now." },
-        {
-          type: "toolCall",
-          id: "call-read",
-          name: "read",
-          arguments: { path: "AGENTS.md" },
+    expect(result.slice(1, 3)).toEqual([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "I will clean that up now." }],
+        timestamp: 2,
+        openclawStreamFallback: {
+          replacementText: "I will clean that up now.",
+          source: "segment",
+          itemId: "msg-progress",
         },
-      ],
-      timestamp: 2,
-      __openclaw: { seq: 2 },
-    });
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "private reasoning" },
+          {
+            type: "toolCall",
+            id: "call-read",
+            name: "read",
+            arguments: { path: "AGENTS.md" },
+          },
+        ],
+        timestamp: 2,
+        __openclaw: { seq: 2 },
+      },
+    ]);
   });
 
-  it("keeps pure commentary assistant messages hidden", () => {
+  it("projects pure keyed commentary as a durable preamble", () => {
     const result = projectRecentChatDisplayMessages([
       userHistoryMessage("status", { timestamp: 1 }),
       {
@@ -1824,7 +1921,19 @@ describe("projectRecentChatDisplayMessages", () => {
       },
     ]);
 
-    expect(result).toEqual([userHistoryMessage("status", { timestamp: 1 })]);
+    expect(result).toEqual([
+      userHistoryMessage("status", { timestamp: 1 }),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Working..." }],
+        timestamp: 2,
+        openclawStreamFallback: {
+          replacementText: "Working...",
+          source: "segment",
+          itemId: "msg-commentary",
+        },
+      },
+    ]);
   });
 
   it("drops duplicate ACP gateway-injected assistant replies from chat history", () => {
