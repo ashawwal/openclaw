@@ -9,6 +9,7 @@ import { closeOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 
 const SESSION_COUNT = 2_640;
 const SESSION_WINDOW_COUNT = 300_000;
+const SPARSE_EVENT_SESSION_COUNT = 4_096;
 const ACTIVE_SESSIONS = 40;
 const EVENTS_PER_SESSION = 128;
 const PAYLOAD = "x".repeat(48 * 1024);
@@ -67,6 +68,48 @@ const SESSION_WINDOW_CHILD_SCRIPT = String.raw`
     configuredAgentDatabaseTargets: [{ agentId: "main", path }], env: process.env,
   });
   process.stdout.write(JSON.stringify(migration) + "\n");
+`;
+const SPARSE_EVENT_CHILD_SCRIPT = String.raw`
+  import { DatabaseSync } from "node:sqlite";
+  import { resolveOpenClawAgentSqlitePath } from "./src/state/openclaw-agent-db.ts";
+  const originalPrepare = DatabaseSync.prototype.prepare;
+  let mediaSelects = 0;
+  DatabaseSync.prototype.prepare = function (sql) {
+    if (/^\s*select/i.test(sql) &&
+        /(transcript_events|trajectory_runtime_events|session_windows)/i.test(sql)) {
+      mediaSelects += 1;
+    }
+    return originalPrepare.call(this, sql);
+  };
+  const { migrateLegacyMediaPersistence } = await import(
+    "./src/infra/state-migrations.media-persistence.ts"
+  );
+  const path = resolveOpenClawAgentSqlitePath({ agentId: "main", env: process.env });
+  const migration = migrateLegacyMediaPersistence({
+    configuredAgentDatabaseTargets: [{ agentId: "main", path }], env: process.env,
+  });
+  const migrationSelects = mediaSelects;
+  const db = new DatabaseSync(path, { readOnly: true });
+  const transcript = JSON.parse(db.prepare(
+    "SELECT event_json FROM transcript_events WHERE session_id=? AND seq=0",
+  ).get("sparse-0").event_json);
+  const trajectory = JSON.parse(db.prepare(
+    "SELECT event_json FROM trajectory_runtime_events WHERE session_id=? AND seq=0",
+  ).get("sparse-${SPARSE_EVENT_SESSION_COUNT - 1}").event_json);
+  process.stdout.write(JSON.stringify({
+    warnings: migration.warnings,
+    changeCount: migration.changes.length,
+    migrationSelects,
+    transcriptMediaPath: transcript.message.__openclaw?.media?.[0]?.path,
+    transcriptHasLegacyCarrier: Object.hasOwn(transcript.message, "MediaPath"),
+    trajectoryMediaPath:
+      trajectory.data.messagesSnapshot[0].__openclaw?.media?.[0]?.path,
+    trajectoryHasLegacyCarrier: Object.hasOwn(
+      trajectory.data.messagesSnapshot[0],
+      "MediaPath",
+    ),
+  }) + "\n");
+  db.close();
 `;
 
 function createCorpus(stateDir: string): void {
@@ -138,6 +181,49 @@ function createSessionWindowCorpus(stateDir: string): void {
   closeOpenClawAgentDatabases();
 }
 
+function createSparseEventCorpus(stateDir: string): void {
+  const database = openOpenClawAgentDatabase({
+    agentId: "main",
+    env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+  });
+  database.db.exec("BEGIN");
+  database.db
+    .prepare(`WITH RECURSIVE n(i) AS (
+    VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1 < ?
+  ) INSERT INTO session_nodes(session_key,current_session_id,entry_json,entry_valid,updated_at)
+    SELECT 'agent:main:sparse-'||i, 'sparse-'||i,
+      json_object('sessionId','sparse-'||i,'updatedAt',i+1), 1, i+1 FROM n`)
+    .run(SPARSE_EVENT_SESSION_COUNT);
+  database.db
+    .prepare(`WITH RECURSIVE n(i) AS (
+    VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1 < ?
+  ) INSERT INTO session_windows(session_id,session_key,created_at,updated_at)
+    SELECT 'sparse-'||i, 'agent:main:sparse-'||i, i+1, i+1 FROM n`)
+    .run(SPARSE_EVENT_SESSION_COUNT);
+  database.db
+    .prepare(`WITH RECURSIVE n(i) AS (
+    VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1 < ?
+  ) INSERT INTO transcript_events(session_id,seq,event_json,created_at)
+    SELECT 'sparse-'||i, 0,
+      json_object('type','message','id','transcript-'||i,'parentId',NULL,'message',
+        CASE WHEN i=0
+          THEN json_object('role','user','content','sparse','MediaPath','/media/transcript.png')
+          ELSE json_object('role','user','content','sparse') END), i+1 FROM n`)
+    .run(SPARSE_EVENT_SESSION_COUNT);
+  database.db
+    .prepare(`WITH RECURSIVE n(i) AS (
+    VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1 < ?
+  ) INSERT INTO trajectory_runtime_events(session_id,seq,run_id,event_json,created_at)
+    SELECT 'sparse-'||i, 0, 'run-'||i,
+      json_object('type','model.completed','data',json_object('messagesSnapshot',json_array(
+        CASE WHEN i=?
+          THEN json_object('role','user','content','sparse','MediaPath','/media/trajectory.png')
+          ELSE json_object('role','user','content','sparse') END))), i+1 FROM n`)
+    .run(SPARSE_EVENT_SESSION_COUNT, SPARSE_EVENT_SESSION_COUNT - 1);
+  database.db.exec("COMMIT; UPDATE session_nodes SET entry_valid=1");
+  closeOpenClawAgentDatabases();
+}
+
 describe("legacy media persistence large corpus", () => {
   it("does not materialize every session window under a 128 MiB old-space cap", () => {
     const stateDir = tempDir.make("openclaw-media-session-windows-");
@@ -200,6 +286,45 @@ describe("legacy media persistence large corpus", () => {
         middlePreserved: true,
         lastPreserved: true,
       });
+    } finally {
+      closeOpenClawAgentDatabases();
+      closeOpenClawStateDatabase();
+    }
+  }, 130_000);
+
+  it("bounds SQLite crossings across many event-bearing sessions", () => {
+    const stateDir = tempDir.make("openclaw-media-sparse-events-");
+    try {
+      createSparseEventCorpus(stateDir);
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", "--input-type=module", "-e", SPARSE_EVENT_CHILD_SCRIPT],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+          timeout: 120_000,
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const output = JSON.parse(result.stdout) as {
+        changeCount: number;
+        migrationSelects: number;
+        transcriptHasLegacyCarrier: boolean;
+        transcriptMediaPath: string;
+        trajectoryHasLegacyCarrier: boolean;
+        trajectoryMediaPath: string;
+        warnings: string[];
+      };
+      expect(output).toMatchObject({
+        warnings: [],
+        changeCount: 1,
+        transcriptMediaPath: "/media/transcript.png",
+        transcriptHasLegacyCarrier: false,
+        trajectoryMediaPath: "/media/trajectory.png",
+        trajectoryHasLegacyCarrier: false,
+      });
+      expect(output.migrationSelects).toBeLessThan(1_000);
     } finally {
       closeOpenClawAgentDatabases();
       closeOpenClawStateDatabase();
