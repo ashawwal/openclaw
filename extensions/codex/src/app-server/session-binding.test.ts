@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 // Codex tests cover the SQLite-backed thread binding facade.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
+  createPluginBlobStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
+  resetPluginBlobStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
@@ -19,6 +22,9 @@ import {
   reclaimCurrentCodexSessionGeneration,
   type StoredCodexAppServerBinding,
 } from "./session-binding.js";
+import { useAutoCleanupTempDirTracker } from "./test-support.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function createStateStore() {
   const values = new Map<string, StoredCodexAppServerBinding>();
@@ -56,6 +62,7 @@ function createStateStore() {
 
 afterEach(() => {
   vi.useRealTimers();
+  resetPluginBlobStoreForTests();
   resetPluginStateStoreForTests();
 });
 
@@ -620,6 +627,401 @@ describe("Codex app-server binding store", () => {
     } finally {
       resetPluginStateStoreForTests();
       fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps oversized frozen workspace instructions outside the bounded binding row", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-bootstrap-state-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    try {
+      const state = createPluginStateSyncKeyedStoreForTests<StoredCodexAppServerBinding>("codex", {
+        namespace: "app-server-thread-bindings-bootstrap-test",
+        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+        env,
+      });
+      const snapshots = createPluginBlobStoreForTests<{ version: 1 }>(
+        "codex",
+        {
+          namespace: "app-server-developer-instructions-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(state, snapshots);
+      const identity = { kind: "session" as const, agentId: "main", sessionId: "large-bootstrap" };
+      // Matches the documented 50,000-character per-agent bootstrap example while
+      // proving that a character budget is not a safe bound for a UTF-8 state row.
+      const instructions = "界".repeat(50_000);
+
+      await expect(
+        store.mutate(identity, {
+          kind: "set",
+          binding: {
+            threadId: "thread-large-bootstrap",
+            cwd: "/repo",
+            agentWorkspaceDeveloperInstructions: instructions,
+          },
+        }),
+      ).resolves.toBe(true);
+
+      const raw = state.lookup(bindingStoreKey(identity));
+      expect(Buffer.byteLength(JSON.stringify(raw), "utf8")).toBeLessThan(65_536);
+      expect(raw).not.toHaveProperty("binding.agentWorkspaceDeveloperInstructions");
+      expect(raw).toHaveProperty(
+        "binding.agentWorkspaceDeveloperInstructionsBlob.key",
+        expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      );
+      await expect(store.read(identity)).resolves.toMatchObject({
+        threadId: "thread-large-bootstrap",
+        agentWorkspaceDeveloperInstructions: instructions,
+      });
+      await expect(snapshots.entries()).resolves.toHaveLength(1);
+
+      const [snapshot] = await snapshots.entries();
+      const legacyIdentity = {
+        kind: "session" as const,
+        agentId: "main",
+        sessionId: "legacy-bootstrap-reference",
+      };
+      state.register(bindingStoreKey(legacyIdentity), {
+        version: 1,
+        state: "active",
+        binding: {
+          threadId: "thread-legacy-bootstrap",
+          cwd: "/repo",
+          agentWorkspaceDeveloperInstructions:
+            `\u0000openclaw:codex-developer-instructions:v1:${snapshot!.key}:` +
+            snapshot!.sizeBytes,
+        },
+      });
+      await expect(store.read(legacyIdentity)).resolves.toMatchObject({
+        agentWorkspaceDeveloperInstructions: instructions,
+      });
+      await expect(
+        store.mutate(legacyIdentity, {
+          kind: "patch",
+          threadId: "thread-legacy-bootstrap",
+          patch: { model: "gpt-5.6-sol" },
+        }),
+      ).resolves.toBe(true);
+      expect(state.lookup(bindingStoreKey(legacyIdentity))).toMatchObject({
+        binding: {
+          agentWorkspaceDeveloperInstructionsBlob: {
+            version: 1,
+            key: snapshot!.key,
+            sizeBytes: snapshot!.sizeBytes,
+          },
+        },
+      });
+      expect(state.lookup(bindingStoreKey(legacyIdentity))).not.toHaveProperty(
+        "binding.agentWorkspaceDeveloperInstructions",
+      );
+
+      await expect(
+        store.mutate(identity, {
+          kind: "patch",
+          threadId: "thread-large-bootstrap",
+          patch: { model: "gpt-5.6-sol" },
+        }),
+      ).resolves.toBe(true);
+      await expect(store.read(identity)).resolves.toMatchObject({
+        model: "gpt-5.6-sol",
+        agentWorkspaceDeveloperInstructions: instructions,
+      });
+      await expect(snapshots.entries()).resolves.toHaveLength(1);
+
+      const replacementInstructions = `${instructions}\nA later frozen generation.`;
+      await expect(
+        store.mutate(identity, {
+          kind: "patch",
+          threadId: "thread-large-bootstrap",
+          patch: { agentWorkspaceDeveloperInstructions: replacementInstructions },
+        }),
+      ).resolves.toBe(true);
+      await expect(store.read(identity)).resolves.toMatchObject({
+        agentWorkspaceDeveloperInstructions: replacementInstructions,
+      });
+      await expect(snapshots.entries()).resolves.toHaveLength(2);
+
+      const referencedSnapshot = (await snapshots.entries()).find(
+        (entry) => entry.sizeBytes === Buffer.byteLength(replacementInstructions, "utf8"),
+      );
+      expect(referencedSnapshot).toBeDefined();
+      await snapshots.delete(referencedSnapshot!.key);
+      await expect(store.read(identity)).rejects.toThrow(
+        "Codex developer-instructions snapshot is missing",
+      );
+    } finally {
+      resetPluginBlobStoreForTests();
+      resetPluginStateStoreForTests();
+    }
+  });
+
+  it("keeps small frozen workspace instructions inline", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-bootstrap-inline-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    try {
+      const state = createPluginStateSyncKeyedStoreForTests<StoredCodexAppServerBinding>("codex", {
+        namespace: "app-server-thread-bindings-inline-test",
+        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+        env,
+      });
+      const snapshots = createPluginBlobStoreForTests<{ version: 1 }>(
+        "codex",
+        {
+          namespace: "app-server-developer-instructions-inline-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(state, snapshots);
+      const identity = { kind: "session" as const, agentId: "main", sessionId: "small-bootstrap" };
+      const instructions = "Keep this frozen workspace policy inline.";
+
+      await expect(
+        store.mutate(identity, {
+          kind: "set",
+          binding: {
+            threadId: "thread-small-bootstrap",
+            cwd: "/repo",
+            agentWorkspaceDeveloperInstructions: instructions,
+          },
+        }),
+      ).resolves.toBe(true);
+
+      expect(state.lookup(bindingStoreKey(identity))).toMatchObject({
+        binding: { agentWorkspaceDeveloperInstructions: instructions },
+      });
+      expect(state.lookup(bindingStoreKey(identity))).not.toHaveProperty(
+        "binding.agentWorkspaceDeveloperInstructionsBlob",
+      );
+      await expect(snapshots.entries()).resolves.toHaveLength(0);
+
+      const oversizedInstructions = "界".repeat(50_000);
+      await expect(
+        store.mutate(identity, {
+          kind: "patch",
+          threadId: "thread-small-bootstrap",
+          patch: { agentWorkspaceDeveloperInstructions: oversizedInstructions },
+        }),
+      ).resolves.toBe(true);
+      expect(state.lookup(bindingStoreKey(identity))).not.toHaveProperty(
+        "binding.agentWorkspaceDeveloperInstructions",
+      );
+      expect(state.lookup(bindingStoreKey(identity))).toHaveProperty(
+        "binding.agentWorkspaceDeveloperInstructionsBlob.key",
+        expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      );
+      await expect(store.read(identity)).resolves.toMatchObject({
+        agentWorkspaceDeveloperInstructions: oversizedInstructions,
+      });
+      await expect(snapshots.entries()).resolves.toHaveLength(1);
+
+      await expect(
+        store.mutate(identity, {
+          kind: "patch",
+          threadId: "thread-small-bootstrap",
+          patch: { agentWorkspaceDeveloperInstructions: instructions },
+        }),
+      ).resolves.toBe(true);
+      expect(state.lookup(bindingStoreKey(identity))).toMatchObject({
+        binding: { agentWorkspaceDeveloperInstructions: instructions },
+      });
+      expect(state.lookup(bindingStoreKey(identity))).not.toHaveProperty(
+        "binding.agentWorkspaceDeveloperInstructionsBlob",
+      );
+      // Publication is blob-first and deletion is deliberately deferred to a
+      // conservative full-census sweep; runtime mutation never races shared data.
+      await expect(snapshots.entries()).resolves.toHaveLength(1);
+    } finally {
+      resetPluginBlobStoreForTests();
+      resetPluginStateStoreForTests();
+    }
+  });
+
+  it("repairs a corrupt content-addressed instruction snapshot before publishing its reference", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-bootstrap-corrupt-repair-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    try {
+      const state = createPluginStateSyncKeyedStoreForTests<StoredCodexAppServerBinding>("codex", {
+        namespace: "app-server-thread-bindings-corrupt-repair-test",
+        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+        env,
+      });
+      const snapshots = createPluginBlobStoreForTests<{ version: 1 }>(
+        "codex",
+        {
+          namespace: "app-server-developer-instructions-corrupt-repair-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(state, snapshots);
+      const identity = { kind: "session" as const, agentId: "main", sessionId: "corrupt-repair" };
+      const instructions = "界".repeat(50_000);
+      const bytes = new TextEncoder().encode(instructions);
+      const key = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
+      await snapshots.register(key, new TextEncoder().encode("corrupt"), { version: 1 });
+      await expect(
+        store.mutate(identity, {
+          kind: "set",
+          binding: {
+            threadId: "thread-corrupt-repair",
+            cwd: "/repo",
+            agentWorkspaceDeveloperInstructions: instructions,
+          },
+        }),
+      ).resolves.toBe(true);
+
+      await expect(store.read(identity)).resolves.toMatchObject({
+        threadId: "thread-corrupt-repair",
+        agentWorkspaceDeveloperInstructions: instructions,
+      });
+      await expect(snapshots.lookup(key)).resolves.toMatchObject({
+        bytes,
+        sizeBytes: bytes.byteLength,
+        metadata: { version: 1 },
+      });
+    } finally {
+      resetPluginBlobStoreForTests();
+      resetPluginStateStoreForTests();
+    }
+  });
+
+  it("externalizes JSON-escaped instructions before their state row can overflow", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-bootstrap-escaped-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    try {
+      const state = createPluginStateSyncKeyedStoreForTests<StoredCodexAppServerBinding>("codex", {
+        namespace: "app-server-thread-bindings-escaped-test",
+        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+        env,
+      });
+      const snapshots = createPluginBlobStoreForTests<{ version: 1 }>(
+        "codex",
+        {
+          namespace: "app-server-developer-instructions-escaped-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(state, snapshots);
+      const identity = { kind: "session" as const, agentId: "main", sessionId: "escaped" };
+      const instructions = "\\".repeat(32 * 1024);
+
+      await expect(
+        store.mutate(identity, {
+          kind: "set",
+          binding: {
+            threadId: "thread-escaped",
+            cwd: "/repo",
+            agentWorkspaceDeveloperInstructions: instructions,
+          },
+        }),
+      ).resolves.toBe(true);
+      expect(
+        Buffer.byteLength(JSON.stringify(state.lookup(bindingStoreKey(identity)))),
+      ).toBeLessThan(65_536);
+      expect(state.lookup(bindingStoreKey(identity))).toHaveProperty(
+        "binding.agentWorkspaceDeveloperInstructionsBlob.key",
+      );
+    } finally {
+      resetPluginBlobStoreForTests();
+      resetPluginStateStoreForTests();
+    }
+  });
+
+  it("rejects malformed persisted instruction references instead of dropping policy", async () => {
+    const { state } = createStateStore();
+    state.register("session:main:malformed-reference", {
+      version: 1,
+      state: "active",
+      binding: {
+        threadId: "thread-malformed-reference",
+        cwd: "/repo",
+        agentWorkspaceDeveloperInstructionsBlob: {
+          version: 1,
+          key: "not-a-digest",
+          sizeBytes: 10,
+        },
+      },
+    } as unknown as StoredCodexAppServerBinding);
+    const store = createCodexAppServerBindingStore(state);
+
+    await expect(
+      store.read({ kind: "session", agentId: "main", sessionId: "malformed-reference" }),
+    ).rejects.toThrow("Invalid Codex app-server binding row");
+  });
+
+  it("does not clear a concurrently replaced instruction snapshot", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-bootstrap-clear-fence-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    try {
+      const state = createPluginStateSyncKeyedStoreForTests<StoredCodexAppServerBinding>("codex", {
+        namespace: "app-server-thread-bindings-clear-fence-test",
+        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+        env,
+      });
+      const snapshots = createPluginBlobStoreForTests<{ version: 1 }>(
+        "codex",
+        {
+          namespace: "app-server-developer-instructions-clear-fence-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(state, snapshots);
+      const identity = { kind: "session" as const, agentId: "main", sessionId: "clear-fence" };
+      await store.mutate(identity, {
+        kind: "set",
+        binding: {
+          threadId: "thread-clear-fence",
+          cwd: "/repo",
+          agentWorkspaceDeveloperInstructions: "甲".repeat(50_000),
+        },
+      });
+      const first = state.lookup(bindingStoreKey(identity));
+      expect(first?.state).toBe("active");
+      if (first?.state !== "active" || !first.binding.agentWorkspaceDeveloperInstructionsBlob) {
+        throw new Error("expected first externalized instruction reference");
+      }
+      const firstReference = first.binding.agentWorkspaceDeveloperInstructionsBlob;
+
+      await store.mutate(identity, {
+        kind: "patch",
+        threadId: "thread-clear-fence",
+        patch: { agentWorkspaceDeveloperInstructions: "乙".repeat(50_000) },
+      });
+      await expect(
+        store.mutate(identity, {
+          kind: "clear",
+          threadId: "thread-clear-fence",
+          expectedDeveloperInstructionsBlob: firstReference,
+        }),
+      ).resolves.toBe(false);
+      await expect(store.read(identity)).resolves.toMatchObject({
+        threadId: "thread-clear-fence",
+        agentWorkspaceDeveloperInstructions: "乙".repeat(50_000),
+      });
+    } finally {
+      resetPluginBlobStoreForTests();
+      resetPluginStateStoreForTests();
     }
   });
 

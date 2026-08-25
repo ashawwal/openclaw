@@ -13,7 +13,10 @@ import {
   type AuthProfileStore,
 } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  PluginBlobStore,
+  PluginStateSyncKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { z } from "zod";
@@ -26,6 +29,27 @@ const CODEX_APP_SERVER_NATIVE_AUTH_PROVIDER = "openai";
 const PUBLIC_OPENAI_MODEL_PROVIDER = "openai";
 const BINDING_LEASE_RETRY_INTERVAL_MS = 1_000;
 const BOUNDED_BINDING_FINGERPRINT_PATTERN = /^sha256:[a-f0-9]{64}$/i;
+const DEVELOPER_INSTRUCTIONS_BLOB_REFERENCE_PREFIX =
+  "\u0000openclaw:codex-developer-instructions:v1:";
+const DEVELOPER_INSTRUCTIONS_BLOB_REFERENCE_SUFFIX_PATTERN = /^(sha256:[a-f0-9]{64}):(\d+)$/;
+// Leave half of the keyed-state row available for the binding's other durable
+// fields. This is intentionally byte-based: bootstrap budgets are character-
+// based, and valid multibyte instructions can be much larger in SQLite JSON.
+const DEVELOPER_INSTRUCTIONS_INLINE_MAX_BYTES = 32 * 1024;
+const developerInstructionsBlobReferenceSchema = z
+  .object({
+    version: z.literal(1),
+    key: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    sizeBytes: z.number().int().positive(),
+  })
+  .strict();
+
+export type CodexAppServerDeveloperInstructionsBlobMetadata = { version: 1 };
+type DeveloperInstructionsBlobReference = z.infer<typeof developerInstructionsBlobReferenceSchema>;
+type DeveloperInstructionsBlobStore = Pick<
+  PluginBlobStore<CodexAppServerDeveloperInstructionsBlobMetadata>,
+  "lookup" | "register"
+>;
 
 export {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
@@ -213,6 +237,9 @@ const threadBindingSchema = z
     // Freeze OpenClaw-carried AGENTS.md at thread creation; bootstrap refreshes
     // must not mutate the inherited policy of a resumed native session.
     agentWorkspaceDeveloperInstructions: optionalNonBlankStringSchema,
+    // Oversized frozen snapshots live in the plugin blob store so this atomic
+    // binding row remains below the host's 64 KiB keyed-state limit.
+    agentWorkspaceDeveloperInstructionsBlob: developerInstructionsBlobReferenceSchema.optional(),
     model: optionalStringSchema,
     // Codex App Server owns selection for supervised and adopted threads. Keep
     // this marker across resumes so OpenClaw never substitutes a default or fallback.
@@ -281,6 +308,15 @@ const threadBindingSchema = z
       .catch(undefined),
   })
   .superRefine((binding, context) => {
+    if (
+      binding.agentWorkspaceDeveloperInstructions &&
+      binding.agentWorkspaceDeveloperInstructionsBlob
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "developer instructions must use either inline or blob storage",
+      });
+    }
     if (binding.connectionScope === "supervision") {
       if (!binding.supervisionSourceThreadId) {
         context.addIssue({
@@ -347,6 +383,30 @@ export type CodexAppServerThreadBinding = z.infer<typeof threadBindingSchema>;
 /** Persisted source snapshot and orphan-cleanup state for a supervised native branch. */
 export type CodexAppServerPendingSupervisionBranch = z.infer<typeof pendingSupervisionBranchSchema>;
 
+export class CodexAppServerInstructionSnapshotError extends Error {
+  readonly code: "missing" | "corrupt";
+  readonly threadId: string;
+  readonly connectionScope?: "supervision";
+  readonly reference: DeveloperInstructionsBlobReference;
+
+  constructor(params: {
+    code: "missing" | "corrupt";
+    threadId: string;
+    connectionScope?: "supervision";
+    reference: DeveloperInstructionsBlobReference;
+    cause?: unknown;
+  }) {
+    super(`Codex developer-instructions snapshot is ${params.code}: ${params.reference.key}`, {
+      cause: params.cause,
+    });
+    this.name = "CodexAppServerInstructionSnapshotError";
+    this.code = params.code;
+    this.threadId = params.threadId;
+    this.connectionScope = params.connectionScope;
+    this.reference = params.reference;
+  }
+}
+
 export class CodexSupervisionBindingReplacementError extends Error {
   constructor(threadId: string, operation: string) {
     super(
@@ -406,6 +466,8 @@ type CodexAppServerBindingMutation =
   | {
       kind: "clear";
       threadId?: string;
+      /** Fences recovery cleanup to the exact unavailable immutable snapshot. */
+      expectedDeveloperInstructionsBlob?: DeveloperInstructionsBlobReference;
       /** Only failed creation may clear the exact provisional supervision owner. */
       expectedPendingSupervisionBranch?: CodexAppServerPendingSupervisionBranch;
     };
@@ -676,6 +738,7 @@ export async function reclaimCurrentCodexSessionGeneration(params: {
 /** Creates the single binding facade owned by the Codex plugin runtime. */
 export function createCodexAppServerBindingStore(
   state: BindingStateStore,
+  developerInstructions?: DeveloperInstructionsBlobStore,
 ): CodexAppServerBindingStore {
   const update = state.update?.bind(state);
   if (!update) {
@@ -826,7 +889,7 @@ export function createCodexAppServerBindingStore(
         throw new Error(`Invalid Codex app-server binding row: ${key}`);
       }
       return stored?.state === "active" && ownsStoredSessionGeneration(identity, stored)
-        ? stored.binding
+        ? await hydrateDeveloperInstructions(stored.binding, developerInstructions)
         : undefined;
     },
 
@@ -876,18 +939,22 @@ export function createCodexAppServerBindingStore(
 
     async mutate(identity, mutation) {
       return await runBindingMutation(async () => {
+        const nextMutation = await externalizeDeveloperInstructions(
+          mutation,
+          developerInstructions,
+        );
         const key = bindingStoreKey(identity);
         // A retained legacy sidecar may be revisited by doctor after runtime
         // clear. Keep provenance so migration cannot resurrect its stale thread.
         const retainLegacyClear =
-          mutation.kind === "clear" && key.startsWith("conversation:legacy-");
+          nextMutation.kind === "clear" && key.startsWith("conversation:legacy-");
         return await transactKey(
           key,
           (current, leaseToken) => {
             const ownsGeneration = ownsStoredSessionGeneration(identity, current);
             const ownedLease =
               current?.lease && current.lease.token === leaseToken ? { lease: current.lease } : {};
-            if (mutation.kind === "reclaim-generation") {
+            if (nextMutation.kind === "reclaim-generation") {
               if (identity.kind !== "session" || !identity.sessionKey?.trim()) {
                 return { result: false };
               }
@@ -898,7 +965,7 @@ export function createCodexAppServerBindingStore(
                 if (
                   current.state === "cleared" &&
                   current.retired === true &&
-                  current.sessionId === mutation.expectedPreviousSessionId
+                  current.sessionId === nextMutation.expectedPreviousSessionId
                 ) {
                   // Reset boundaries now retain the OpenClaw session id. The
                   // authoritative session-store check above proves this fence
@@ -917,7 +984,7 @@ export function createCodexAppServerBindingStore(
                   result: current.state !== "cleared" || current.retired !== true,
                 };
               }
-              if (current.sessionId !== mutation.expectedPreviousSessionId) {
+              if (current.sessionId !== nextMutation.expectedPreviousSessionId) {
                 return { result: false };
               }
               // A stale physical generation must never turn private user-home ownership into
@@ -941,48 +1008,54 @@ export function createCodexAppServerBindingStore(
             const retiredGeneration =
               current?.state === "cleared" && current.retired === true && ownsGeneration;
             const preservesSupervisionOwner =
-              mutation.kind === "set" &&
+              nextMutation.kind === "set" &&
               active?.binding.connectionScope === "supervision" &&
-              isSameSupervisionOwner(active.binding, mutation.binding);
+              isSameSupervisionOwner(active.binding, nextMutation.binding);
             const clearsPendingSupervisionOwner =
-              mutation.kind === "clear" &&
+              nextMutation.kind === "clear" &&
               active?.binding.connectionScope === "supervision" &&
               matchesPendingSupervisionClear(
                 active.binding,
-                mutation.threadId,
-                mutation.expectedPendingSupervisionBranch,
+                nextMutation.threadId,
+                nextMutation.expectedPendingSupervisionBranch,
               );
             const replacesExpectedOrdinaryOwner =
-              mutation.kind === "replace-thread" &&
-              active?.binding.threadId === mutation.expectedThreadId &&
+              nextMutation.kind === "replace-thread" &&
+              active?.binding.threadId === nextMutation.expectedThreadId &&
               active.binding.connectionScope !== "supervision" &&
-              mutation.binding.connectionScope !== "supervision" &&
-              mutation.binding.threadId !== mutation.expectedThreadId;
+              nextMutation.binding.connectionScope !== "supervision" &&
+              nextMutation.binding.threadId !== nextMutation.expectedThreadId;
             if (
-              (mutation.kind === "set" &&
-                ((mutation.if?.kind === "absent" && storedActive) ||
+              (nextMutation.kind === "set" &&
+                ((nextMutation.if?.kind === "absent" && storedActive) ||
                   (current !== undefined && !ownsGeneration) ||
                   retiredGeneration ||
                   (active?.binding.connectionScope === "supervision" &&
                     !preservesSupervisionOwner))) ||
-              (mutation.kind === "patch" && active?.binding.threadId !== mutation.threadId) ||
-              (mutation.kind === "replace-thread" && !replacesExpectedOrdinaryOwner) ||
-              ((mutation.kind === "patch-pending-supervision-branch" ||
-                mutation.kind === "commit-pending-supervision-branch") &&
-                !matchesPendingSupervisionBranch(active?.binding, mutation.expected)) ||
-              (mutation.kind === "clear" &&
-                ((mutation.threadId !== undefined &&
-                  active?.binding.threadId !== mutation.threadId) ||
+              (nextMutation.kind === "patch" &&
+                active?.binding.threadId !== nextMutation.threadId) ||
+              (nextMutation.kind === "replace-thread" && !replacesExpectedOrdinaryOwner) ||
+              ((nextMutation.kind === "patch-pending-supervision-branch" ||
+                nextMutation.kind === "commit-pending-supervision-branch") &&
+                !matchesPendingSupervisionBranch(active?.binding, nextMutation.expected)) ||
+              (nextMutation.kind === "clear" &&
+                ((nextMutation.threadId !== undefined &&
+                  active?.binding.threadId !== nextMutation.threadId) ||
+                  (nextMutation.expectedDeveloperInstructionsBlob !== undefined &&
+                    !sameDeveloperInstructionsBlobReference(
+                      active?.binding.agentWorkspaceDeveloperInstructionsBlob,
+                      nextMutation.expectedDeveloperInstructionsBlob,
+                    )) ||
                   !ownsGeneration ||
                   (active?.binding.connectionScope === "supervision" &&
                     !clearsPendingSupervisionOwner)))
             ) {
               return { result: false };
             }
-            if (mutation.kind === "clear" && retiredGeneration) {
+            if (nextMutation.kind === "clear" && retiredGeneration) {
               return { result: true };
             }
-            if (mutation.kind === "clear") {
+            if (nextMutation.kind === "clear") {
               return {
                 result: true,
                 next: {
@@ -994,25 +1067,25 @@ export function createCodexAppServerBindingStore(
               };
             }
             let binding: CodexAppServerThreadBinding;
-            if (mutation.kind === "set" || mutation.kind === "replace-thread") {
-              binding = validateBindingForWrite(mutation.binding);
-            } else if (mutation.kind === "patch-pending-supervision-branch") {
+            if (nextMutation.kind === "set" || nextMutation.kind === "replace-thread") {
+              binding = validateBindingForWrite(nextMutation.binding);
+            } else if (nextMutation.kind === "patch-pending-supervision-branch") {
               binding = validateBindingForWrite({
                 ...active!.binding,
-                pendingSupervisionBranch: mutation.pending,
+                pendingSupervisionBranch: nextMutation.pending,
               });
-            } else if (mutation.kind === "commit-pending-supervision-branch") {
+            } else if (nextMutation.kind === "commit-pending-supervision-branch") {
               binding = validateBindingForWrite({
                 ...active!.binding,
-                ...mutation.patch,
-                threadId: mutation.threadId,
+                ...nextMutation.patch,
+                threadId: nextMutation.threadId,
                 pendingSupervisionBranch: undefined,
               });
             } else {
               binding = validateBindingForWrite({
                 ...active!.binding,
-                ...mutation.patch,
-                threadId: mutation.threadId,
+                ...nextMutation.patch,
+                threadId: nextMutation.threadId,
               });
             }
             return {
@@ -1030,7 +1103,7 @@ export function createCodexAppServerBindingStore(
           // the key afterwards is fenced by ownsStoredSessionGeneration on read
           // and displaced via reclaim-generation; durable stable-key fences come
           // from retireSessionGeneration, not runtime clears.
-          mutation.kind === "clear" && !retainLegacyClear && !leaseContext.getStore()?.has(key)
+          nextMutation.kind === "clear" && !retainLegacyClear && !leaseContext.getStore()?.has(key)
             ? 1
             : undefined,
         );
@@ -1258,6 +1331,174 @@ export function createCodexAppServerBindingStore(
   };
 }
 
+async function externalizeDeveloperInstructions(
+  mutation: CodexAppServerBindingMutation,
+  store: DeveloperInstructionsBlobStore | undefined,
+): Promise<CodexAppServerBindingMutation> {
+  if (!store) {
+    return mutation;
+  }
+  if (mutation.kind === "set" || mutation.kind === "replace-thread") {
+    const binding = validateBindingForWrite(mutation.binding);
+    const instructions = binding.agentWorkspaceDeveloperInstructions;
+    if (!instructions) {
+      return { ...mutation, binding };
+    }
+    if (!developerInstructionsRequireBlob(instructions)) {
+      const { agentWorkspaceDeveloperInstructionsBlob: _existingReference, ...rest } = binding;
+      return { ...mutation, binding: rest };
+    }
+    const {
+      agentWorkspaceDeveloperInstructions: _instructions,
+      agentWorkspaceDeveloperInstructionsBlob: _existingReference,
+      ...rest
+    } = binding;
+    return {
+      ...mutation,
+      binding: {
+        ...rest,
+        agentWorkspaceDeveloperInstructionsBlob: await persistDeveloperInstructions(
+          instructions,
+          store,
+        ),
+      },
+    };
+  }
+  if (mutation.kind !== "patch" && mutation.kind !== "commit-pending-supervision-branch") {
+    return mutation;
+  }
+  if (!Object.hasOwn(mutation.patch, "agentWorkspaceDeveloperInstructions")) {
+    return mutation;
+  }
+  const instructions = mutation.patch.agentWorkspaceDeveloperInstructions;
+  if (typeof instructions !== "string" || !instructions.trim()) {
+    return {
+      ...mutation,
+      patch: {
+        ...mutation.patch,
+        agentWorkspaceDeveloperInstructionsBlob: undefined,
+      },
+    };
+  }
+  if (!developerInstructionsRequireBlob(instructions)) {
+    return {
+      ...mutation,
+      patch: {
+        ...mutation.patch,
+        agentWorkspaceDeveloperInstructionsBlob: undefined,
+      },
+    };
+  }
+  return {
+    ...mutation,
+    patch: {
+      ...mutation.patch,
+      agentWorkspaceDeveloperInstructions: undefined,
+      agentWorkspaceDeveloperInstructionsBlob: await persistDeveloperInstructions(
+        instructions,
+        store,
+      ),
+    },
+  };
+}
+
+function developerInstructionsRequireBlob(instructions: string): boolean {
+  return (
+    Buffer.byteLength(JSON.stringify(instructions), "utf8") >
+    DEVELOPER_INSTRUCTIONS_INLINE_MAX_BYTES
+  );
+}
+
+function sameDeveloperInstructionsBlobReference(
+  current: DeveloperInstructionsBlobReference | undefined,
+  expected: DeveloperInstructionsBlobReference,
+): boolean {
+  return (
+    current?.version === expected.version &&
+    current.key === expected.key &&
+    current.sizeBytes === expected.sizeBytes
+  );
+}
+
+async function persistDeveloperInstructions(
+  instructions: string,
+  store: DeveloperInstructionsBlobStore,
+): Promise<DeveloperInstructionsBlobReference> {
+  const bytes = new TextEncoder().encode(instructions);
+  const key = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  // Content-addressing proves these are the expected bytes for this key. Use
+  // register rather than registerIfAbsent so a previously detected corrupt row
+  // is repaired instead of being referenced again on every later startup.
+  await store.register(key, bytes, { version: 1 });
+  return { version: 1, key, sizeBytes: bytes.byteLength };
+}
+
+async function hydrateDeveloperInstructions(
+  binding: CodexAppServerThreadBinding,
+  store: DeveloperInstructionsBlobStore | undefined,
+): Promise<CodexAppServerThreadBinding> {
+  const reference =
+    binding.agentWorkspaceDeveloperInstructionsBlob ??
+    readLegacyDeveloperInstructionsReference(binding.agentWorkspaceDeveloperInstructions);
+  if (!reference) {
+    return binding;
+  }
+  if (!store) {
+    throw new Error("Codex developer-instructions blob store is unavailable");
+  }
+  const entry = await store.lookup(reference.key);
+  if (!entry) {
+    throw new CodexAppServerInstructionSnapshotError({
+      code: "missing",
+      threadId: binding.threadId,
+      connectionScope: binding.connectionScope,
+      reference,
+    });
+  }
+  const actualKey = `sha256:${createHash("sha256").update(entry.bytes).digest("hex")}`;
+  if (
+    entry.metadata.version !== 1 ||
+    entry.sizeBytes !== reference.sizeBytes ||
+    entry.bytes.byteLength !== reference.sizeBytes ||
+    actualKey !== reference.key
+  ) {
+    throw new CodexAppServerInstructionSnapshotError({
+      code: "corrupt",
+      threadId: binding.threadId,
+      connectionScope: binding.connectionScope,
+      reference,
+    });
+  }
+  const { agentWorkspaceDeveloperInstructionsBlob: _reference, ...rest } = binding;
+  try {
+    return {
+      ...rest,
+      agentWorkspaceDeveloperInstructions: new TextDecoder("utf-8", { fatal: true }).decode(
+        entry.bytes,
+      ),
+    };
+  } catch (error) {
+    throw new CodexAppServerInstructionSnapshotError({
+      code: "corrupt",
+      threadId: binding.threadId,
+      connectionScope: binding.connectionScope,
+      reference,
+      cause: error,
+    });
+  }
+}
+
+function readLegacyDeveloperInstructionsReference(
+  value: string | undefined,
+): DeveloperInstructionsBlobReference | undefined {
+  const match = value?.startsWith(DEVELOPER_INSTRUCTIONS_BLOB_REFERENCE_PREFIX)
+    ? value
+        .slice(DEVELOPER_INSTRUCTIONS_BLOB_REFERENCE_PREFIX.length)
+        .match(DEVELOPER_INSTRUCTIONS_BLOB_REFERENCE_SUFFIX_PATTERN)
+    : undefined;
+  return match ? { version: 1, key: match[1]!, sizeBytes: Number(match[2]!) } : undefined;
+}
+
 function matchesPendingSupervisionBranch(
   binding: CodexAppServerThreadBinding | undefined,
   expected: CodexAppServerPendingSupervisionBranch,
@@ -1338,9 +1579,27 @@ export function readStoredCodexAppServerBinding(
   value: unknown,
 ): StoredCodexAppServerBinding | undefined {
   const result = storedBindingSchema.safeParse(value);
-  return result.success
-    ? (stripUndefinedValue(result.data) as StoredCodexAppServerBinding)
-    : undefined;
+  if (!result.success) {
+    return undefined;
+  }
+  const stored = stripUndefinedValue(result.data) as StoredCodexAppServerBinding;
+  if (stored.state !== "active") {
+    return stored;
+  }
+  const reference = readLegacyDeveloperInstructionsReference(
+    stored.binding.agentWorkspaceDeveloperInstructions,
+  );
+  if (!reference) {
+    return stored;
+  }
+  const { agentWorkspaceDeveloperInstructions: _legacyReference, ...rest } = stored.binding;
+  return {
+    ...stored,
+    binding: {
+      ...rest,
+      agentWorkspaceDeveloperInstructionsBlob: reference,
+    },
+  };
 }
 
 function storedSessionGeneration(

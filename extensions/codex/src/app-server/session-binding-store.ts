@@ -1,5 +1,8 @@
 /** Lazy store facade that keeps binding schema/auth code off plugin startup. */
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  PluginBlobStore,
+  PluginStateSyncKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createCodexManagedThreadStore,
   type CodexManagedThreadStore,
@@ -8,10 +11,25 @@ import {
 import {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
   CODEX_APP_SERVER_BINDING_NAMESPACE,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_BYTES,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_BYTES_PER_ENTRY,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_ENTRIES,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_NAMESPACE,
 } from "./session-binding-meta.js";
-import type { CodexAppServerBindingStore, StoredCodexAppServerBinding } from "./session-binding.js";
+import type {
+  CodexAppServerBindingStore,
+  CodexAppServerDeveloperInstructionsBlobMetadata,
+  StoredCodexAppServerBinding,
+} from "./session-binding.js";
 
-export { CODEX_APP_SERVER_BINDING_MAX_ENTRIES, CODEX_APP_SERVER_BINDING_NAMESPACE };
+export {
+  CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+  CODEX_APP_SERVER_BINDING_NAMESPACE,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_BYTES,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_BYTES_PER_ENTRY,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_ENTRIES,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_NAMESPACE,
+};
 export type { StoredCodexAppServerBinding } from "./session-binding.js";
 
 /** Defers schema compilation and auth loading until the first binding operation. */
@@ -24,11 +42,15 @@ export function createLazyCodexAppServerBindingStore(
     PluginStateSyncKeyedStore<StoredCodexManagedThread>,
     "entries" | "registerIfAbsent"
   >,
+  developerInstructions?: Pick<
+    PluginBlobStore<CodexAppServerDeveloperInstructionsBlobMetadata>,
+    "lookup" | "register"
+  >,
 ): CodexAppServerBindingStore {
   let resolved: Promise<CodexAppServerBindingStore> | undefined;
   const store = () =>
     (resolved ??= import("./session-binding.js").then(({ createCodexAppServerBindingStore }) =>
-      createCodexAppServerBindingStore(state),
+      createCodexAppServerBindingStore(state, developerInstructions),
     ));
   const managedThreads: CodexManagedThreadStore | undefined = managedThreadState
     ? createCodexManagedThreadStore(managedThreadState)

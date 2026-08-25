@@ -10,7 +10,10 @@ import {
   resolveLivePluginConfigObject,
 } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  PluginBlobStore,
+  PluginStateSyncKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import { registerCodexCliMetadata } from "./cli-metadata.js";
 import {
   createCodexAppServerAgentHarness,
@@ -29,9 +32,14 @@ import {
 import {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
   CODEX_APP_SERVER_BINDING_NAMESPACE,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_BYTES,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_BYTES_PER_ENTRY,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_ENTRIES,
+  CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_NAMESPACE,
   createLazyCodexAppServerBindingStore,
   type StoredCodexAppServerBinding,
 } from "./src/app-server/session-binding-store.js";
+import type { CodexAppServerDeveloperInstructionsBlobMetadata } from "./src/app-server/session-binding.js";
 import { retireSharedCodexAppServerClientsBeforeDesktopGeneration } from "./src/app-server/shared-client.js";
 import type { CodexPluginsConfigBlock } from "./src/command-plugins-management.js";
 import { createCodexCommand } from "./src/commands.js";
@@ -125,6 +133,9 @@ export default definePluginEntry({
       );
     }
     let bindingStateStore: PluginStateSyncKeyedStore<StoredCodexAppServerBinding> | undefined;
+    let developerInstructionsStore:
+      | PluginBlobStore<CodexAppServerDeveloperInstructionsBlobMetadata>
+      | undefined;
     let managedThreadStateStore: PluginStateSyncKeyedStore<StoredCodexManagedThread> | undefined;
     const openBindingStateStore = () =>
       (bindingStateStore ??= api.runtime.state.openSyncKeyedStore<StoredCodexAppServerBinding>({
@@ -161,9 +172,27 @@ export default definePluginEntry({
       entries: () => openManagedThreadStateStore().entries(),
       registerIfAbsent: (key, value) => openManagedThreadStateStore().registerIfAbsent(key, value),
     };
+    const openDeveloperInstructionsStore = () =>
+      (developerInstructionsStore ??=
+        api.runtime.state.openBlobStore<CodexAppServerDeveloperInstructionsBlobMetadata>({
+          namespace: CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_NAMESPACE,
+          maxEntries: CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_ENTRIES,
+          maxBytesPerEntry: CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_BYTES_PER_ENTRY,
+          maxBytesPerNamespace: CODEX_APP_SERVER_DEVELOPER_INSTRUCTIONS_MAX_BYTES,
+          overflowPolicy: "reject-new",
+        }));
+    const lazyDeveloperInstructionsStore: Pick<
+      PluginBlobStore<CodexAppServerDeveloperInstructionsBlobMetadata>,
+      "lookup" | "register"
+    > = {
+      lookup: (key) => openDeveloperInstructionsStore().lookup(key),
+      register: (key, bytes, metadata, options) =>
+        openDeveloperInstructionsStore().register(key, bytes, metadata, options),
+    };
     const bindingStore = createLazyCodexAppServerBindingStore(
       lazyBindingStateStore,
       lazyManagedThreadStateStore,
+      lazyDeveloperInstructionsStore,
     );
     registerCodexCliMetadata(api);
     const sessionCatalogControlFactory = createCodexSessionCatalogControl({
