@@ -106,6 +106,11 @@ artifact. Plan-based migrations can use
 `openclaw/plugin-sdk/runtime-doctor-migrations` to preserve existing move, copy, preview,
 and plugin-state import behavior.
 
+Doctor migration contexts expose `openPluginStateKeyedStore(...)` for JSON
+state and `openPluginBlobStore(...)` for bounded binary destinations. Runtime
+must consume only the canonical destination; use Doctor to migrate and verify
+retired namespaces before deleting their source rows.
+
 The setup-entry `legacyStateMigrations` option and feature flag,
 `setupFeatures.legacyStateMigrations`,
 `BundledChannelLegacyStateMigrationDetector`, and

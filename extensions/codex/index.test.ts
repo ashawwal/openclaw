@@ -11,6 +11,7 @@ import {
   sessionBindingIdentity,
 } from "./src/app-server/session-binding.js";
 import {
+  createCodexTestBindingRecordStore,
   createCodexTestBindingStateStore,
   testCodexAppServerBindingStore,
 } from "./src/app-server/session-binding.test-helpers.js";
@@ -28,11 +29,13 @@ const explicitAgentConfig = {
 function createCodexTestRuntime(
   current?: () => unknown,
   stateStore = createCodexTestBindingStateStore(),
+  recordStore = createCodexTestBindingRecordStore(),
 ) {
   return {
     ...(current ? { config: { current } } : {}),
     state: {
       openSyncKeyedStore: () => stateStore,
+      openBlobStore: () => recordStore,
     },
   } as never;
 }
@@ -655,7 +658,8 @@ describe("codex plugin", () => {
 
   it("retires only ended session binding rows in the owning agent scope", async () => {
     const stateStore = createCodexTestBindingStateStore();
-    const bindingStore = createCodexAppServerBindingStore(stateStore);
+    const recordStore = createCodexTestBindingRecordStore();
+    const bindingStore = createCodexAppServerBindingStore(recordStore);
     const on = vi.fn();
     plugin.register(
       createTestPluginApi({
@@ -664,7 +668,7 @@ describe("codex plugin", () => {
         source: "test",
         config: {},
         pluginConfig: {},
-        runtime: createCodexTestRuntime(undefined, stateStore),
+        runtime: createCodexTestRuntime(undefined, stateStore, recordStore),
         registerAgentHarness: vi.fn(),
         registerCommand: vi.fn(),
         registerMediaUnderstandingProvider: vi.fn(),
@@ -799,7 +803,8 @@ describe("codex plugin", () => {
 
   it("adopts compaction successors before delayed lifecycle cleanup", async () => {
     const stateStore = createCodexTestBindingStateStore();
-    const bindingStore = createCodexAppServerBindingStore(stateStore);
+    const recordStore = createCodexTestBindingRecordStore();
+    const bindingStore = createCodexAppServerBindingStore(recordStore);
     const on = vi.fn();
     plugin.register(
       createTestPluginApi({
@@ -808,7 +813,7 @@ describe("codex plugin", () => {
         source: "test",
         config: {},
         pluginConfig: {},
-        runtime: createCodexTestRuntime(undefined, stateStore),
+        runtime: createCodexTestRuntime(undefined, stateStore, recordStore),
         registerAgentHarness: vi.fn(),
         registerCommand: vi.fn(),
         registerMediaUnderstandingProvider: vi.fn(),
@@ -880,7 +885,7 @@ describe("codex plugin", () => {
       { agentId: "worker", sessionId: "session-2", sessionKey },
     );
     await expect(bindingStore.read(newest)).resolves.toMatchObject({ threadId: "thread-1" });
-    expect(stateStore.entries()).toHaveLength(1);
+    await expect(recordStore.entries()).resolves.toHaveLength(1);
   });
 
   it("ignores compaction for a session without a Codex binding", async () => {

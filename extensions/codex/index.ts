@@ -10,7 +10,10 @@ import {
   resolveLivePluginConfigObject,
 } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  PluginBlobStore,
+  PluginStateSyncKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import { registerCodexCliMetadata } from "./cli-metadata.js";
 import {
   createCodexAppServerAgentHarness,
@@ -27,11 +30,13 @@ import {
   type StoredCodexManagedThread,
 } from "./src/app-server/managed-thread-store.js";
 import {
-  CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
-  CODEX_APP_SERVER_BINDING_NAMESPACE,
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES,
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES_PER_ENTRY,
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_ENTRIES,
+  CODEX_APP_SERVER_BINDING_RECORD_NAMESPACE,
   createLazyCodexAppServerBindingStore,
-  type StoredCodexAppServerBinding,
 } from "./src/app-server/session-binding-store.js";
+import type { CodexAppServerBindingRecordMetadata } from "./src/app-server/session-binding.js";
 import { retireSharedCodexAppServerClientsBeforeDesktopGeneration } from "./src/app-server/shared-client.js";
 import type { CodexPluginsConfigBlock } from "./src/command-plugins-management.js";
 import { createCodexCommand } from "./src/commands.js";
@@ -124,28 +129,8 @@ export default definePluginEntry({
         }),
       );
     }
-    let bindingStateStore: PluginStateSyncKeyedStore<StoredCodexAppServerBinding> | undefined;
+    let bindingRecordStore: PluginBlobStore<CodexAppServerBindingRecordMetadata> | undefined;
     let managedThreadStateStore: PluginStateSyncKeyedStore<StoredCodexManagedThread> | undefined;
-    const openBindingStateStore = () =>
-      (bindingStateStore ??= api.runtime.state.openSyncKeyedStore<StoredCodexAppServerBinding>({
-        namespace: CODEX_APP_SERVER_BINDING_NAMESPACE,
-        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
-        overflowPolicy: "reject-new",
-      }));
-    // The base registration runtime deliberately rejects state access. Open the
-    // store only when a proxied runtime performs the first binding operation.
-    const lazyBindingStateStore: Pick<
-      PluginStateSyncKeyedStore<StoredCodexAppServerBinding>,
-      "delete" | "entries" | "lookup" | "update"
-    > = {
-      delete: (key) => openBindingStateStore().delete(key),
-      entries: () => openBindingStateStore().entries(),
-      lookup: (key) => openBindingStateStore().lookup(key),
-      get update() {
-        const store = openBindingStateStore();
-        return store.update?.bind(store);
-      },
-    };
     const openManagedThreadStateStore = () =>
       (managedThreadStateStore ??= api.runtime.state.openSyncKeyedStore<StoredCodexManagedThread>({
         namespace: CODEX_MANAGED_THREAD_NAMESPACE,
@@ -161,8 +146,25 @@ export default definePluginEntry({
       entries: () => openManagedThreadStateStore().entries(),
       registerIfAbsent: (key, value) => openManagedThreadStateStore().registerIfAbsent(key, value),
     };
+    const openBindingRecordStore = () =>
+      (bindingRecordStore ??= api.runtime.state.openBlobStore<CodexAppServerBindingRecordMetadata>({
+        namespace: CODEX_APP_SERVER_BINDING_RECORD_NAMESPACE,
+        maxEntries: CODEX_APP_SERVER_BINDING_RECORD_MAX_ENTRIES,
+        maxBytesPerEntry: CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES_PER_ENTRY,
+        maxBytesPerNamespace: CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES,
+        overflowPolicy: "reject-new",
+      }));
+    const lazyBindingRecordStore: Pick<
+      PluginBlobStore<CodexAppServerBindingRecordMetadata>,
+      "deleteExpired" | "entries" | "lookup" | "mutate"
+    > = {
+      deleteExpired: () => openBindingRecordStore().deleteExpired(),
+      entries: () => openBindingRecordStore().entries(),
+      lookup: (key) => openBindingRecordStore().lookup(key),
+      mutate: (key, update) => openBindingRecordStore().mutate(key, update),
+    };
     const bindingStore = createLazyCodexAppServerBindingStore(
-      lazyBindingStateStore,
+      lazyBindingRecordStore,
       lazyManagedThreadStateStore,
     );
     registerCodexCliMetadata(api);

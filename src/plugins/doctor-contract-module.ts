@@ -1,5 +1,6 @@
 import type { LegacyConfigRule } from "../config/legacy.shared.js";
 import type { OpenClawConfig } from "../config/types.js";
+import type { OpenBlobStoreOptions, PluginBlobStore } from "../plugin-state/plugin-blob-store.js";
 import type {
   OpenKeyedStoreOptions,
   PluginStateKeyedStore,
@@ -13,6 +14,8 @@ export type PluginDoctorStateMigrationDetection = {
 
 export type PluginDoctorStateMigrationContext = {
   openPluginStateKeyedStore: <T>(options: OpenKeyedStoreOptions) => PluginStateKeyedStore<T>;
+  /** Doctor-owned access for migrations whose canonical destination is binary plugin state. */
+  openPluginBlobStore?: <TMetadata>(options: OpenBlobStoreOptions) => PluginBlobStore<TMetadata>;
   /** Doctor-only batch import preserving source age and remaining retention. */
   importPluginStateEntries?: (
     options: OpenKeyedStoreOptions,
