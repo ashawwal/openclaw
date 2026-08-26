@@ -24,7 +24,7 @@ import {
   type CodexAppServerPendingSupervisionBranch,
 } from "./session-binding.js";
 import {
-  createCodexTestBindingStateStore,
+  createCodexTestBindingRecordStore,
   resetCodexTestBindingStore,
   testCodexAppServerBindingStore,
 } from "./session-binding.test-helpers.js";
@@ -2450,8 +2450,8 @@ describe("Codex plugin binding recovery", () => {
     );
     params.agentDir = path.join(tempDir, "agent");
     const mark = vi.fn(async () => undefined);
-    const stateStore = createCodexTestBindingStateStore();
-    const bindingStore = Object.assign(createCodexAppServerBindingStore(stateStore), {
+    const recordStore = createCodexTestBindingRecordStore();
+    const bindingStore = Object.assign(createCodexAppServerBindingStore(recordStore), {
       managedThreads: { mark, snapshot: vi.fn(async () => new Map()) },
     });
     const request = vi.fn(async (method: string) => {
@@ -2478,12 +2478,9 @@ describe("Codex plugin binding recovery", () => {
       sourceHomeId: expect.stringMatching(/^[a-f0-9]{64}$/),
       threadId: "thread-managed",
     });
-    expect(stateStore.entries().map((entry) => entry.value)).toContainEqual(
-      expect.objectContaining({
-        state: "active",
-        binding: expect.objectContaining({ threadId: "thread-managed" }),
-      }),
-    );
+    await expect(bindingStore.read(sessionBindingIdentity(params))).resolves.toMatchObject({
+      threadId: "thread-managed",
+    });
   });
 
   it.each([
@@ -2501,7 +2498,7 @@ describe("Codex plugin binding recovery", () => {
     params.agentDir = path.join(tempDir, "agent");
     const mark = vi.fn(async () => undefined);
     const bindingStore = Object.assign(
-      createCodexAppServerBindingStore(createCodexTestBindingStateStore()),
+      createCodexAppServerBindingStore(createCodexTestBindingRecordStore()),
       { managedThreads: { mark, snapshot: vi.fn(async () => new Map()) } },
     );
     const request = vi.fn(async (method: string) => {
@@ -2543,15 +2540,17 @@ describe("Codex plugin binding recovery", () => {
       path.join(tempDir, "session-managed-failure.jsonl"),
       path.join(tempDir, "workspace-managed-failure"),
     );
-    const stateStore = createCodexTestBindingStateStore();
-    const bindingStore = Object.assign(createCodexAppServerBindingStore(stateStore), {
-      managedThreads: {
-        mark: vi.fn(async () => {
-          throw new Error("managed ownership unavailable");
-        }),
-        snapshot: vi.fn(async () => new Map()),
+    const bindingStore = Object.assign(
+      createCodexAppServerBindingStore(createCodexTestBindingRecordStore()),
+      {
+        managedThreads: {
+          mark: vi.fn(async () => {
+            throw new Error("managed ownership unavailable");
+          }),
+          snapshot: vi.fn(async () => new Map()),
+        },
       },
-    });
+    );
     const request = vi.fn(async (method: string) => {
       if (method === "thread/start") {
         return threadStartResult("thread-managed-without-index");
@@ -2753,8 +2752,8 @@ describe("Codex plugin binding recovery", () => {
     const sessionFile = path.join(tempDir, "session-authority.jsonl");
     const workspaceDir = path.join(tempDir, "workspace-authority");
     const params = createThreadLifecycleParams(sessionFile, workspaceDir);
-    const stateStore = createCodexTestBindingStateStore();
-    let bindingStore = createCodexAppServerBindingStore(stateStore);
+    const recordStore = createCodexTestBindingRecordStore();
+    let bindingStore = createCodexAppServerBindingStore(recordStore);
     let threadSequence = 0;
     const threadStarts: Array<Record<string, unknown>> = [];
     const request = vi.fn(async (method: string, requestParams?: unknown) => {
@@ -2836,7 +2835,7 @@ describe("Codex plugin binding recovery", () => {
       bindingStore,
       pluginThreadConfig: provider("unrestricted", true),
     });
-    bindingStore = createCodexAppServerBindingStore(stateStore);
+    bindingStore = createCodexAppServerBindingStore(recordStore);
     await startOrResumeThreadImpl({
       ...common,
       bindingStore,

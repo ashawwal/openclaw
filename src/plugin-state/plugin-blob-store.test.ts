@@ -242,6 +242,61 @@ describe("plugin blob store", () => {
     });
   });
 
+  it("atomically mutates one blob row under concurrent callers", async () => {
+    await withOpenClawTestState({ label: "plugin-blob-mutate" }, async (state) => {
+      const store = createPluginBlobStore<{ count: number }>(
+        "diffs",
+        options(state.env, { maxBytesPerEntry: 64, maxBytesPerNamespace: 128 }),
+      );
+      await store.register("counter", new Uint8Array([0]), { count: 0 });
+
+      await Promise.all(
+        Array.from({ length: 20 }, () =>
+          store.mutate("counter", (current) => ({
+            kind: "set",
+            bytes: new Uint8Array([(current?.bytes[0] ?? 0) + 1]),
+            metadata: { count: (current?.metadata.count ?? 0) + 1 },
+          })),
+        ),
+      );
+
+      await expect(store.lookup("counter")).resolves.toMatchObject({
+        bytes: new Uint8Array([20]),
+        metadata: { count: 20 },
+      });
+    });
+  });
+
+  it("rolls back failed mutations and supports atomic deletion", async () => {
+    await withOpenClawTestState({ label: "plugin-blob-mutate-rollback" }, async (state) => {
+      const store = createPluginBlobStore<{ version: string }>("diffs", options(state.env));
+      await store.register("stable", new Uint8Array([1, 2]), { version: "old" });
+
+      await expect(
+        store.mutate("stable", () => {
+          throw new Error("abort mutation");
+        }),
+      ).rejects.toMatchObject({
+        code: "PLUGIN_BLOB_WRITE_FAILED",
+        cause: expect.objectContaining({ message: "abort mutation" }),
+      });
+      await expect(
+        store.mutate("stable", () => ({
+          kind: "set",
+          bytes: new Uint8Array(17),
+          metadata: { version: "too-large" },
+        })),
+      ).rejects.toMatchObject({ code: "PLUGIN_BLOB_LIMIT_EXCEEDED" });
+      await expect(store.lookup("stable")).resolves.toMatchObject({
+        bytes: new Uint8Array([1, 2]),
+        metadata: { version: "old" },
+      });
+
+      await expect(store.mutate("stable", () => ({ kind: "delete" }))).resolves.toBe(true);
+      await expect(store.lookup("stable")).resolves.toBeUndefined();
+    });
+  });
+
   it("keeps an expired stable key occupied until the owner claims its metadata", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(4_000);

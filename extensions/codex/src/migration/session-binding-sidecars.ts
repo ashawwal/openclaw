@@ -23,7 +23,12 @@ import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
   CODEX_APP_SERVER_BINDING_NAMESPACE,
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES,
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES_PER_ENTRY,
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_ENTRIES,
+  CODEX_APP_SERVER_BINDING_RECORD_NAMESPACE,
 } from "../app-server/session-binding-meta.js";
+import type { CodexAppServerBindingRecordMetadata } from "../app-server/session-binding.js";
 
 const LEGACY_BINDING_SUFFIX = ".codex-app-server.json";
 const CODEX_AGENT_HARNESS_ID = "codex";
@@ -893,6 +898,118 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
         warnings,
         ...(notices.length > 0 ? { notices } : {}),
       };
+    },
+  },
+  {
+    id: "codex-app-server-bindings-to-atomic-records",
+    label: "Codex app-server atomic thread binding records",
+    async detectLegacyState(params) {
+      const store = params.context.openPluginStateKeyedStore<MigratedBindingRow>({
+        namespace: CODEX_APP_SERVER_BINDING_NAMESPACE,
+        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+        overflowPolicy: "reject-new",
+      });
+      const { sources } = await collectLegacyBindingSources(params, { firstOnly: true });
+      return (await store.entries()).length > 0 || sources.length > 0
+        ? {
+            preview: [
+              `- Codex app-server bindings: keyed plugin state -> atomic binding records (${CODEX_APP_SERVER_BINDING_RECORD_NAMESPACE})`,
+            ],
+          }
+        : null;
+    },
+    async migrateLegacyState(params) {
+      const changes: string[] = [];
+      const warnings: string[] = [];
+      const legacy = params.context.openPluginStateKeyedStore<MigratedBindingRow>({
+        namespace: CODEX_APP_SERVER_BINDING_NAMESPACE,
+        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+        overflowPolicy: "reject-new",
+      });
+      const entries = await legacy.entries();
+      if (entries.length === 0) {
+        return { changes, warnings };
+      }
+      const openBlobStore = params.context.openPluginBlobStore;
+      if (!openBlobStore) {
+        return {
+          changes,
+          warnings: ["Atomic Codex binding-record migration is unavailable in this Doctor host"],
+        };
+      }
+      const records = openBlobStore<CodexAppServerBindingRecordMetadata>({
+        namespace: CODEX_APP_SERVER_BINDING_RECORD_NAMESPACE,
+        maxEntries: CODEX_APP_SERVER_BINDING_RECORD_MAX_ENTRIES,
+        maxBytesPerEntry: CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES_PER_ENTRY,
+        maxBytesPerNamespace: CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES,
+        overflowPolicy: "reject-new",
+      });
+      const {
+        encodeCodexAppServerBindingRecord,
+        hydrateCodexAppServerBindingRecord,
+        normalizeStoredCodexAppServerBindingFingerprints,
+        readStoredCodexAppServerBinding,
+      } = await import("../app-server/session-binding.js");
+      let migrated = 0;
+      let retired = 0;
+      for (const entry of entries) {
+        const parsed = readStoredCodexAppServerBinding(entry.value);
+        const stored = parsed
+          ? normalizeStoredCodexAppServerBindingFingerprints(parsed)
+          : undefined;
+        if (!stored) {
+          warnings.push(`Left invalid legacy Codex binding row in place at ${entry.key}`);
+          continue;
+        }
+        try {
+          let record = await records.lookup(entry.key);
+          if (!record) {
+            const expired = await records.deleteExpiredKey(entry.key);
+            if (expired) {
+              // Expired canonical state represents an intentionally retired
+              // binding. Remove its stale keyed shadow without resurrecting it.
+              const removed = legacy.deleteIf
+                ? await legacy.deleteIf(entry.key, (current) =>
+                    isDeepStrictEqual(current, entry.value),
+                  )
+                : false;
+              if (!removed) {
+                warnings.push(`Legacy Codex binding changed before cleanup at ${entry.key}`);
+                continue;
+              }
+              retired++;
+              continue;
+            }
+            const encoded = encodeCodexAppServerBindingRecord({ stored });
+            await records.registerIfAbsent(entry.key, encoded.bytes, encoded.metadata);
+            record = await records.lookup(entry.key);
+          }
+          if (!record) {
+            warnings.push(`Could not verify migrated Codex binding record at ${entry.key}`);
+            continue;
+          }
+          // A pre-existing atomic record is canonical. Validate it before retiring
+          // any stale keyed shadow left by an interrupted earlier Doctor pass.
+          hydrateCodexAppServerBindingRecord(record);
+          const removed = legacy.deleteIf
+            ? await legacy.deleteIf(entry.key, (current) => isDeepStrictEqual(current, entry.value))
+            : false;
+          if (!removed) {
+            warnings.push(`Legacy Codex binding changed before cleanup at ${entry.key}`);
+            continue;
+          }
+          migrated++;
+        } catch (error) {
+          warnings.push(`Failed migrating legacy Codex binding at ${entry.key}: ${String(error)}`);
+        }
+      }
+      if (migrated > 0) {
+        changes.push(`Migrated ${migrated} Codex app-server binding row(s) to atomic records`);
+      }
+      if (retired > 0) {
+        changes.push(`Retired ${retired} stale legacy Codex binding row(s) behind expired records`);
+      }
+      return { changes, warnings };
     },
   },
 ];

@@ -12,11 +12,43 @@ import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import { CodexAppServerRpcError } from "./client.js";
 import { neutralizeCodexExplicitMentionSigils } from "./context-engine-projection.js";
 import { isJsonObject, type CodexServerNotification } from "./protocol.js";
-import type {
-  CodexAppServerBindingIdentity,
-  CodexAppServerBindingStore,
+import {
+  CodexAppServerInstructionSnapshotError,
+  type CodexAppServerBindingIdentity,
+  type CodexAppServerBindingStore,
+  type CodexAppServerThreadBinding,
 } from "./session-binding.js";
 import type { CodexAppServerThreadLifecycleBinding } from "./thread-lifecycle.js";
+
+/** Reads an ordinary startup binding, rotating safely when its immutable blob is unavailable. */
+export async function readCodexAppServerStartupBinding(params: {
+  bindingStore: CodexAppServerBindingStore;
+  identity: CodexAppServerBindingIdentity;
+}): Promise<CodexAppServerThreadBinding | undefined> {
+  try {
+    return await params.bindingStore.read(params.identity);
+  } catch (error) {
+    if (
+      !(error instanceof CodexAppServerInstructionSnapshotError) ||
+      error.connectionScope === "supervision"
+    ) {
+      throw error;
+    }
+    const cleared = await params.bindingStore.mutate(params.identity, {
+      kind: "clear",
+      threadId: error.threadId,
+      expectedStorageRevision: error.storageRevision,
+    });
+    if (!cleared) {
+      throw error;
+    }
+    embeddedAgentLog.warn(
+      "codex frozen workspace snapshot unavailable; rotating to a fresh native thread",
+      { threadId: error.threadId, reason: error.code },
+    );
+    return undefined;
+  }
+}
 
 export async function clearCodexBindingAfterInvalidImagePayload(
   bindingStore: CodexAppServerBindingStore,

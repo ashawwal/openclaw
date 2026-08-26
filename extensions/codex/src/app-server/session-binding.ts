@@ -13,7 +13,11 @@ import {
   type AuthProfileStore,
 } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  PluginBlobEntry,
+  PluginBlobEntryInfo,
+  PluginBlobStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { z } from "zod";
@@ -26,6 +30,7 @@ const CODEX_APP_SERVER_NATIVE_AUTH_PROVIDER = "openai";
 const PUBLIC_OPENAI_MODEL_PROVIDER = "openai";
 const BINDING_LEASE_RETRY_INTERVAL_MS = 1_000;
 const BOUNDED_BINDING_FINGERPRINT_PATTERN = /^sha256:[a-f0-9]{64}$/i;
+const BINDING_RECORD_METADATA_MAX_BYTES = 64 * 1024;
 
 export {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
@@ -347,6 +352,28 @@ export type CodexAppServerThreadBinding = z.infer<typeof threadBindingSchema>;
 /** Persisted source snapshot and orphan-cleanup state for a supervised native branch. */
 export type CodexAppServerPendingSupervisionBranch = z.infer<typeof pendingSupervisionBranchSchema>;
 
+export class CodexAppServerInstructionSnapshotError extends Error {
+  readonly code = "corrupt";
+  readonly threadId: string;
+  readonly connectionScope?: "supervision";
+  readonly storageRevision: string;
+
+  constructor(params: {
+    threadId: string;
+    connectionScope?: "supervision";
+    storageRevision: string;
+    cause?: unknown;
+  }) {
+    super(`Codex developer-instructions snapshot is corrupt for thread ${params.threadId}`, {
+      cause: params.cause,
+    });
+    this.name = "CodexAppServerInstructionSnapshotError";
+    this.threadId = params.threadId;
+    this.connectionScope = params.connectionScope;
+    this.storageRevision = params.storageRevision;
+  }
+}
+
 export class CodexSupervisionBindingReplacementError extends Error {
   constructor(threadId: string, operation: string) {
     super(
@@ -406,6 +433,8 @@ type CodexAppServerBindingMutation =
   | {
       kind: "clear";
       threadId?: string;
+      /** Fences recovery cleanup to the exact corrupt atomic storage record. */
+      expectedStorageRevision?: string;
       /** Only failed creation may clear the exact provisional supervision owner. */
       expectedPendingSupervisionBranch?: CodexAppServerPendingSupervisionBranch;
     };
@@ -448,6 +477,153 @@ const storedBindingSchema = z.discriminatedUnion("state", [
 // Session-key rows survive transcript/session-id rotation. The stored physical
 // id fences delayed lifecycle cleanup so an old generation cannot clear its successor.
 export type StoredCodexAppServerBinding = z.infer<typeof storedBindingSchema>;
+
+const bindingRecordMetadataSchema = z
+  .object({
+    version: z.literal(1),
+    revision: z.string().uuid(),
+    stored: storedBindingSchema,
+    instructions: z
+      .object({
+        version: z.literal(1),
+        digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        sizeBytes: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((metadata, context) => {
+    const binding = metadata.stored.state === "active" ? metadata.stored.binding : undefined;
+    if (binding?.agentWorkspaceDeveloperInstructions) {
+      context.addIssue({
+        code: "custom",
+        message: "binding record metadata must not contain developer instruction bytes",
+      });
+    }
+    if (metadata.instructions && !binding) {
+      context.addIssue({
+        code: "custom",
+        message: "only an active binding may own developer instruction bytes",
+      });
+    }
+  });
+
+export type CodexAppServerBindingRecordMetadata = z.infer<typeof bindingRecordMetadataSchema>;
+type BindingRecordBlobStore = Pick<
+  PluginBlobStore<CodexAppServerBindingRecordMetadata>,
+  "deleteExpired" | "entries" | "lookup" | "mutate"
+>;
+
+function isPluginBlobLimitError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "PLUGIN_BLOB_LIMIT_EXCEEDED"
+  );
+}
+
+function bindingInstructionsDigest(bytes: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+export function encodeCodexAppServerBindingRecord(params: {
+  stored: StoredCodexAppServerBinding;
+}): { bytes: Uint8Array; metadata: CodexAppServerBindingRecordMetadata } {
+  const instructions =
+    params.stored.state === "active"
+      ? params.stored.binding.agentWorkspaceDeveloperInstructions
+      : undefined;
+  const bytes = instructions ? new TextEncoder().encode(instructions) : new Uint8Array();
+  const stored = (() => {
+    if (params.stored.state !== "active" || !instructions) {
+      return params.stored;
+    }
+    const { agentWorkspaceDeveloperInstructions: _instructions, ...binding } =
+      params.stored.binding;
+    return { ...params.stored, binding };
+  })();
+  const metadata = bindingRecordMetadataSchema.parse({
+    version: 1,
+    revision: randomUUID(),
+    stored,
+    ...(instructions
+      ? {
+          instructions: {
+            version: 1,
+            digest: bindingInstructionsDigest(bytes),
+            sizeBytes: bytes.byteLength,
+          },
+        }
+      : {}),
+  });
+  if (Buffer.byteLength(JSON.stringify(metadata), "utf8") > BINDING_RECORD_METADATA_MAX_BYTES) {
+    throw new Error("Codex app-server binding metadata exceeds its 65536 byte limit");
+  }
+  return { bytes, metadata };
+}
+
+function readBindingRecordMetadata(
+  entry: Pick<PluginBlobEntryInfo<CodexAppServerBindingRecordMetadata>, "key" | "metadata">,
+): CodexAppServerBindingRecordMetadata {
+  const parsed = bindingRecordMetadataSchema.safeParse(entry.metadata);
+  if (!parsed.success) {
+    throw new Error(`Invalid Codex app-server binding record metadata: ${entry.key}`, {
+      cause: parsed.error,
+    });
+  }
+  return parsed.data;
+}
+
+export function hydrateCodexAppServerBindingRecord(
+  entry: PluginBlobEntry<CodexAppServerBindingRecordMetadata>,
+): StoredCodexAppServerBinding {
+  const metadata = readBindingRecordMetadata(entry);
+  const descriptor = metadata.instructions;
+  if (!descriptor) {
+    if (entry.bytes.byteLength !== 0) {
+      throw new Error(`Unexpected Codex app-server binding bytes: ${entry.key}`);
+    }
+    return metadata.stored;
+  }
+  const stored = metadata.stored;
+  if (stored.state !== "active") {
+    throw new CodexAppServerInstructionSnapshotError({
+      threadId: "unknown",
+      storageRevision: metadata.revision,
+    });
+  }
+  const binding = stored.binding;
+  const corrupt =
+    entry.sizeBytes !== descriptor.sizeBytes ||
+    entry.bytes.byteLength !== descriptor.sizeBytes ||
+    bindingInstructionsDigest(entry.bytes) !== descriptor.digest;
+  if (corrupt) {
+    throw new CodexAppServerInstructionSnapshotError({
+      threadId: binding?.threadId ?? "unknown",
+      connectionScope: binding?.connectionScope,
+      storageRevision: metadata.revision,
+    });
+  }
+  try {
+    const instructions = new TextDecoder("utf-8", { fatal: true }).decode(entry.bytes);
+    if (!instructions.trim()) {
+      throw new Error("instruction snapshot must not be blank");
+    }
+    return {
+      ...stored,
+      binding: { ...binding, agentWorkspaceDeveloperInstructions: instructions },
+    };
+  } catch (error) {
+    throw new CodexAppServerInstructionSnapshotError({
+      threadId: binding.threadId,
+      connectionScope: binding.connectionScope,
+      storageRevision: metadata.revision,
+      cause: error,
+    });
+  }
+}
 
 export function hashCodexAppServerBindingFingerprint(canonical: string): string {
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
@@ -547,11 +723,6 @@ export function createStoredCodexAppServerBinding(
       }
     : undefined;
 }
-
-type BindingStateStore = Pick<
-  PluginStateSyncKeyedStore<StoredCodexAppServerBinding>,
-  "entries" | "lookup" | "update"
->;
 
 type BindingLeaseOwner = {
   token: string;
@@ -675,12 +846,85 @@ export async function reclaimCurrentCodexSessionGeneration(params: {
 
 /** Creates the single binding facade owned by the Codex plugin runtime. */
 export function createCodexAppServerBindingStore(
-  state: BindingStateStore,
+  records: BindingRecordBlobStore,
 ): CodexAppServerBindingStore {
-  const update = state.update?.bind(state);
-  if (!update) {
-    throw new Error("Codex app-server bindings require atomic plugin-state updates");
-  }
+  const lookupStored = async (key: string): Promise<StoredCodexAppServerBinding | undefined> => {
+    const record = await records.lookup(key);
+    return record ? hydrateCodexAppServerBindingRecord(record) : undefined;
+  };
+
+  const listStored = async (): Promise<
+    Array<{ key: string; value: StoredCodexAppServerBinding }>
+  > => {
+    // Binding records are self-contained, so unlike external artifact blobs
+    // they need no owner cleanup before expired rows can be reclaimed.
+    await records.deleteExpired();
+    return (await records.entries()).map((entry) => ({
+      key: entry.key,
+      value: readBindingRecordMetadata(entry).stored,
+    }));
+  };
+
+  const updateStored = async (
+    key: string,
+    updateValue: (
+      current: StoredCodexAppServerBinding | undefined,
+    ) => StoredCodexAppServerBinding | undefined,
+    options?: {
+      ttlMs?: number;
+      expectedCorruptRevision?: string;
+      onRevisionConflict?: () => void;
+    },
+  ): Promise<boolean> => {
+    const mutateRecord = () =>
+      records.mutate(key, (currentRecord) => {
+        const currentMetadata = currentRecord
+          ? readBindingRecordMetadata(currentRecord)
+          : undefined;
+        if (
+          options?.expectedCorruptRevision !== undefined &&
+          currentMetadata?.revision !== options.expectedCorruptRevision
+        ) {
+          options.onRevisionConflict?.();
+          return undefined;
+        }
+        let current: StoredCodexAppServerBinding | undefined;
+        try {
+          current = currentRecord ? hydrateCodexAppServerBindingRecord(currentRecord) : undefined;
+        } catch (error) {
+          if (
+            !(error instanceof CodexAppServerInstructionSnapshotError) ||
+            error.storageRevision !== options?.expectedCorruptRevision
+          ) {
+            throw error;
+          }
+          current = currentMetadata?.stored;
+        }
+        const next = updateValue(current);
+        if (!next) {
+          return undefined;
+        }
+        const encoded = encodeCodexAppServerBindingRecord({ stored: next });
+        return {
+          kind: "set",
+          ...encoded,
+          ...(options?.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+        };
+      });
+    let changed: boolean;
+    try {
+      changed = await mutateRecord();
+    } catch (error) {
+      if (!isPluginBlobLimitError(error)) {
+        throw error;
+      }
+      // Expired blob rows remain physical by contract. Sweep only after a
+      // quota failure, then retry the same atomic mutation once.
+      await records.deleteExpired();
+      changed = await mutateRecord();
+    }
+    return changed;
+  };
   const leaseContext = new AsyncLocalStorage<Map<string, BindingLeaseOwner>>();
   const archiveContext = new AsyncLocalStorage<boolean>();
   let activeBindingMutations = 0;
@@ -723,17 +967,13 @@ export function createCodexAppServerBindingStore(
     }
   };
 
-  const renewLease = (key: string, owner: BindingLeaseOwner): void => {
+  const renewLease = async (key: string, owner: BindingLeaseOwner): Promise<void> => {
     if (owner.failure) {
       return;
     }
     try {
       let renewed = false;
-      const stored = update(key, (raw) => {
-        const current = readStoredCodexAppServerBinding(raw);
-        if (raw !== undefined && !current) {
-          throw new Error(`Invalid Codex app-server binding row: ${key}`);
-        }
+      const stored = await updateStored(key, (current) => {
         const lease = current?.lease;
         const now = Date.now();
         if (!lease || lease.token !== owner.token || lease.expiresAt <= now) {
@@ -762,25 +1002,26 @@ export function createCodexAppServerBindingStore(
       next?: StoredCodexAppServerBinding;
       result: T;
     },
-    ttlMs?: number,
+    options?: {
+      ttlMs?: number;
+      expectedCorruptRevision?: string;
+      revisionConflictResult?: T;
+    },
   ): Promise<T> => {
     const deadline = Date.now() + BINDING_LEASE_WAIT_MS;
     while (true) {
       let busy = false;
       let leaseLost = false;
+      let revisionConflict = false;
       let result!: T;
       const ownedLease = leaseContext.getStore()?.get(key);
       if (ownedLease?.failure) {
         throw ownedLease.failure;
       }
       const ownedToken = ownedLease?.token;
-      update(
+      await updateStored(
         key,
-        (raw) => {
-          const current = readStoredCodexAppServerBinding(raw);
-          if (raw !== undefined && !current) {
-            throw new Error(`Invalid Codex app-server binding row: ${key}`);
-          }
+        (current) => {
           const activeLease = current?.lease;
           const now = Date.now();
           if (
@@ -798,8 +1039,19 @@ export function createCodexAppServerBindingStore(
           result = applied.result;
           return applied.next;
         },
-        ttlMs == null ? undefined : { ttlMs },
+        {
+          ...options,
+          onRevisionConflict: () => {
+            revisionConflict = true;
+          },
+        },
       );
+      if (revisionConflict) {
+        if (options?.revisionConflictResult !== undefined) {
+          return options.revisionConflictResult;
+        }
+        throw new Error(`Codex binding record changed while recovering corrupt storage: ${key}`);
+      }
       if (leaseLost) {
         const failure = bindingLeaseLostError(key);
         if (ownedLease) {
@@ -820,11 +1072,7 @@ export function createCodexAppServerBindingStore(
   return {
     async read(identity) {
       const key = bindingStoreKey(identity);
-      const raw = state.lookup(key);
-      const stored = readStoredCodexAppServerBinding(raw);
-      if (raw !== undefined && !stored) {
-        throw new Error(`Invalid Codex app-server binding row: ${key}`);
-      }
+      const stored = await lookupStored(key);
       return stored?.state === "active" && ownsStoredSessionGeneration(identity, stored)
         ? stored.binding
         : undefined;
@@ -832,7 +1080,7 @@ export function createCodexAppServerBindingStore(
 
     async hasOtherThreadOwner(threadId, currentIdentity) {
       const currentKey = currentIdentity ? bindingStoreKey(currentIdentity) : undefined;
-      return state.entries().some(({ key, value }) => {
+      return (await listStored()).some(({ key, value }) => {
         const stored = readStoredCodexAppServerBinding(value);
         if (!stored) {
           throw new Error(`Invalid Codex app-server binding row: ${key}`);
@@ -851,11 +1099,7 @@ export function createCodexAppServerBindingStore(
 
     async prepareSessionGenerationReclaim(identity) {
       const key = bindingStoreKey(identity);
-      const raw = state.lookup(key);
-      const current = readStoredCodexAppServerBinding(raw);
-      if (raw !== undefined && !current) {
-        throw new Error(`Invalid Codex app-server binding row: ${key}`);
-      }
+      const current = await lookupStored(key);
       if (!current) {
         return { kind: "resolved", result: true };
       }
@@ -1030,9 +1274,19 @@ export function createCodexAppServerBindingStore(
           // the key afterwards is fenced by ownsStoredSessionGeneration on read
           // and displaced via reclaim-generation; durable stable-key fences come
           // from retireSessionGeneration, not runtime clears.
-          mutation.kind === "clear" && !retainLegacyClear && !leaseContext.getStore()?.has(key)
-            ? 1
-            : undefined,
+          {
+            ...(mutation.kind === "clear" &&
+            !retainLegacyClear &&
+            !leaseContext.getStore()?.has(key)
+              ? { ttlMs: 1 }
+              : {}),
+            ...(mutation.kind === "clear" && mutation.expectedStorageRevision
+              ? {
+                  expectedCorruptRevision: mutation.expectedStorageRevision,
+                  revisionConflictResult: false,
+                }
+              : {}),
+          },
         );
       });
     },
@@ -1095,7 +1349,7 @@ export function createCodexAppServerBindingStore(
               },
             };
           },
-          leaseContext.getStore()?.has(key) ? undefined : 1,
+          leaseContext.getStore()?.has(key) ? undefined : { ttlMs: 1 },
         );
       });
     },
@@ -1128,7 +1382,7 @@ export function createCodexAppServerBindingStore(
               },
             };
           },
-          identity.sessionKey?.trim() ? undefined : PHYSICAL_SESSION_RETIRE_TTL_MS,
+          identity.sessionKey?.trim() ? undefined : { ttlMs: PHYSICAL_SESSION_RETIRE_TTL_MS },
         );
       });
     },
@@ -1203,7 +1457,9 @@ export function createCodexAppServerBindingStore(
       nested.set(key, owner);
       // Long app-server RPCs can outlive the stale-owner window. Renew with an
       // exact-token CAS so live work stays serialized while a replaced owner remains fenced.
-      const heartbeat = setInterval(() => renewLease(key, owner), BINDING_LEASE_RENEW_INTERVAL_MS);
+      const heartbeat = setInterval(() => {
+        void renewLease(key, owner);
+      }, BINDING_LEASE_RENEW_INTERVAL_MS);
       heartbeat.unref();
       try {
         const result = await leaseContext.run(nested, run);
@@ -1215,33 +1471,32 @@ export function createCodexAppServerBindingStore(
         clearInterval(heartbeat);
         try {
           const removeOwnedLease = (
-            raw: unknown,
+            current: StoredCodexAppServerBinding | undefined,
             matches: (current: StoredCodexAppServerBinding) => boolean,
           ) => {
-            const current = readStoredCodexAppServerBinding(raw);
             if (!current || !matches(current) || current.lease?.token !== token) {
               return undefined;
             }
             const { lease: _lease, ...released } = current;
             return released;
           };
-          const releasedActive = update(key, (raw) =>
-            removeOwnedLease(raw, (current) => current.state === "active"),
+          const releasedActive = await updateStored(key, (current) =>
+            removeOwnedLease(current, (stored) => stored.state === "active"),
           );
           if (!releasedActive) {
-            const releasedRetired = update(
+            const releasedRetired = await updateStored(
               key,
-              (raw) =>
+              (current) =>
                 removeOwnedLease(
-                  raw,
-                  (current) => current.state === "cleared" && current.retired === true,
+                  current,
+                  (stored) => stored.state === "cleared" && stored.retired === true,
                 ),
               key.startsWith("session:") ? { ttlMs: PHYSICAL_SESSION_RETIRE_TTL_MS } : undefined,
             );
             if (!releasedRetired) {
-              update(
+              await updateStored(
                 key,
-                (raw) => removeOwnedLease(raw, (current) => current.state === "cleared"),
+                (current) => removeOwnedLease(current, (stored) => stored.state === "cleared"),
                 { ttlMs: 1 },
               );
             }
@@ -1338,9 +1593,10 @@ export function readStoredCodexAppServerBinding(
   value: unknown,
 ): StoredCodexAppServerBinding | undefined {
   const result = storedBindingSchema.safeParse(value);
-  return result.success
-    ? (stripUndefinedValue(result.data) as StoredCodexAppServerBinding)
-    : undefined;
+  if (!result.success) {
+    return undefined;
+  }
+  return stripUndefinedValue(result.data) as StoredCodexAppServerBinding;
 }
 
 function storedSessionGeneration(

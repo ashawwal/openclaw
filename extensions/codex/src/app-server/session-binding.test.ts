@@ -2,60 +2,53 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
-  createPluginStateSyncKeyedStoreForTests,
+  createPluginBlobStoreForTests,
+  resetPluginBlobStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   bindingStoreKey,
-  CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+  CodexAppServerInstructionSnapshotError,
   createCodexAppServerBindingStore,
   createStoredCodexAppServerBinding,
+  encodeCodexAppServerBindingRecord,
   hashCodexAppServerBindingFingerprint,
   readCodexAppServerThreadBinding,
   reclaimCurrentCodexSessionGeneration,
+  type CodexAppServerBindingRecordMetadata,
   type StoredCodexAppServerBinding,
 } from "./session-binding.js";
+import { createCodexTestBindingRecordStore } from "./session-binding.test-helpers.js";
+import { useAutoCleanupTempDirTracker } from "./test-support.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function createStateStore() {
-  const values = new Map<string, StoredCodexAppServerBinding>();
-  const state: PluginStateSyncKeyedStore<StoredCodexAppServerBinding> = {
-    register(key, value) {
-      values.set(key, value);
+  const recordValues = new Map<string, StoredCodexAppServerBinding>();
+  const records = createCodexTestBindingRecordStore({
+    set: (key, metadata) => recordValues.set(key, metadata.stored),
+    delete: (key) => {
+      recordValues.delete(key);
     },
-    registerIfAbsent(key, value) {
-      if (values.has(key)) {
-        return false;
-      }
-      values.set(key, value);
-      return true;
-    },
-    update(key, updateValue) {
-      const next = updateValue(values.get(key));
-      if (!next) {
-        return false;
-      }
-      values.set(key, next);
-      return true;
-    },
-    lookup: (key) => values.get(key),
-    consume(key) {
-      const value = values.get(key);
-      values.delete(key);
-      return value;
-    },
-    delete: (key) => values.delete(key),
-    entries: () => [...values].map(([key, value]) => ({ key, value, createdAt: 0 })),
-    clear: () => values.clear(),
-  };
-  return { state, values };
+  });
+  return { records, recordValues };
+}
+
+async function seedStoredBinding(
+  records: ReturnType<typeof createCodexTestBindingRecordStore>,
+  key: string,
+  stored: StoredCodexAppServerBinding,
+): Promise<void> {
+  const encoded = encodeCodexAppServerBindingRecord({ stored });
+  await records.register(key, encoded.bytes, encoded.metadata);
 }
 
 afterEach(() => {
   vi.useRealTimers();
+  resetPluginBlobStoreForTests();
   resetPluginStateStoreForTests();
 });
 
@@ -93,8 +86,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("stores domain data under the canonical session identity", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = { kind: "session" as const, agentId: "main", sessionId: "session-1" };
 
     await store.mutate(identity, {
@@ -106,7 +99,7 @@ describe("Codex app-server binding store", () => {
     expect(binding).toMatchObject({ threadId: "thread-1", cwd: "/repo" });
     expect(binding).not.toHaveProperty("sessionFile");
     expect(binding).not.toHaveProperty("schemaVersion");
-    expect(values.get("session:main:session-1")).toMatchObject({
+    expect(recordValues.get("session:main:session-1")).toMatchObject({
       version: 1,
       state: "active",
       binding: { threadId: "thread-1" },
@@ -114,8 +107,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("replaces only the exact ordinary thread owner", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = { kind: "session" as const, agentId: "main", sessionId: "session-cas" };
     await store.mutate(identity, {
       kind: "set",
@@ -142,8 +135,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("rejects same-thread and supervision ownership through replacement CAS", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = {
       kind: "session" as const,
       agentId: "main",
@@ -178,8 +171,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("does not report the exact session or conversation binding owner as another owner", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const sessionIdentity = {
       kind: "session" as const,
       agentId: "main",
@@ -203,8 +196,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("reports a different valid active binding owner", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const currentIdentity = {
       kind: "session" as const,
       agentId: "main",
@@ -225,15 +218,15 @@ describe("Codex app-server binding store", () => {
     { name: "a different generation", storedSessionId: "session-previous" },
     { name: "a missing generation", storedSessionId: undefined },
   ])("treats $name under the same stable key as another owner", async ({ storedSessionId }) => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const currentIdentity = {
       kind: "session" as const,
       agentId: "main",
       sessionId: "session-current",
       sessionKey: "agent:main:stable",
     };
-    values.set(bindingStoreKey(currentIdentity), {
+    await seedStoredBinding(records, bindingStoreKey(currentIdentity), {
       version: 1,
       state: "active",
       binding: { threadId: "thread-stale-generation", cwd: "/repo" },
@@ -246,38 +239,41 @@ describe("Codex app-server binding store", () => {
   });
 
   it("fails closed on a malformed row during reverse ownership scans", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const currentIdentity = {
       kind: "session" as const,
       agentId: "main",
       sessionId: "session-current",
     };
-    values.set("conversation:invalid", {
+    await records.register("conversation:invalid", new Uint8Array(), {
       version: 1,
-      state: "active",
-      binding: { threadId: "", cwd: "/repo" },
+      revision: "00000000-0000-4000-8000-000000000000",
+      stored: {
+        version: 1,
+        state: "active",
+        binding: { threadId: "", cwd: "/repo" },
+      },
     } as never);
 
     await expect(store.hasOtherThreadOwner("thread-unowned", currentIdentity)).rejects.toThrow(
-      "Invalid Codex app-server binding row: conversation:invalid",
+      "Invalid Codex app-server binding record metadata: conversation:invalid",
     );
   });
 
   it("ignores stale cleared rows during reverse ownership scans", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const currentIdentity = {
       kind: "session" as const,
       agentId: "main",
       sessionId: "session-current",
     };
-    values.set("conversation:cleared", {
+    await seedStoredBinding(records, "conversation:cleared", {
       version: 1,
       state: "cleared",
       retired: true,
-      binding: { threadId: "thread-unowned", cwd: "/repo" },
-    } as never);
+    });
 
     await expect(store.hasOtherThreadOwner("thread-unowned", currentIdentity)).resolves.toBe(false);
   });
@@ -310,28 +306,34 @@ describe("Codex app-server binding store", () => {
       }),
     ).toBeUndefined();
 
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = {
       kind: "session" as const,
       agentId: "main",
       sessionId: "session-corrupt",
     };
-    state.register(bindingStoreKey(identity), {
+    await records.register(bindingStoreKey(identity), new Uint8Array(), {
       version: 1,
-      state: "active",
-      binding: {
-        threadId: "thread-source",
-        cwd: "/repo",
-        preserveNativeModel: true,
-        pendingSupervisionBranch: {
-          sourceThreadId: "thread-source",
-          cleanupThreadIds: ["thread-source"],
+      revision: "00000000-0000-4000-8000-000000000000",
+      stored: {
+        version: 1,
+        state: "active",
+        binding: {
+          threadId: "thread-source",
+          cwd: "/repo",
+          preserveNativeModel: true,
+          pendingSupervisionBranch: {
+            sourceThreadId: "thread-source",
+            cleanupThreadIds: ["thread-source"],
+          },
         },
       },
     } as never);
 
-    await expect(store.read(identity)).rejects.toThrow("Invalid Codex app-server binding row");
+    await expect(store.read(identity)).rejects.toThrow(
+      "Invalid Codex app-server binding record metadata",
+    );
   });
 
   it("fails closed on malformed private supervision ownership", () => {
@@ -353,8 +355,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("commits a pending supervision branch only from its exact cleanup snapshot", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = {
       kind: "session" as const,
       agentId: "main",
@@ -431,8 +433,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("round-trips account app policy context", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = { kind: "session" as const, agentId: "main", sessionId: "session-account" };
     const pluginAppPolicyContext = {
       fingerprint: "account-policy-1",
@@ -466,8 +468,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("round-trips repository marketplace app ownership through stored and imported bindings", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = {
       kind: "session" as const,
       agentId: "main",
@@ -562,15 +564,11 @@ describe("Codex app-server binding store", () => {
     });
   });
 
-  it("canonicalizes undefined fields before writing to JSON-only plugin state", async () => {
+  it("canonicalizes undefined fields before writing binding record metadata", async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-binding-state-"));
     try {
-      const state = createPluginStateSyncKeyedStoreForTests<StoredCodexAppServerBinding>("codex", {
-        namespace: "app-server-thread-bindings-json-test",
-        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      });
-      const store = createCodexAppServerBindingStore(state);
+      const records = createCodexTestBindingRecordStore();
+      const store = createCodexAppServerBindingStore(records);
       const identity = { kind: "conversation" as const, bindingId: "binding-json" };
 
       await expect(
@@ -589,16 +587,20 @@ describe("Codex app-server binding store", () => {
           },
         }),
       ).resolves.toBe(true);
-      expect(state.lookup(bindingStoreKey(identity))).toEqual({
-        version: 1,
-        state: "active",
-        binding: {
-          threadId: "thread-json",
-          cwd: "/repo",
-          contextEngine: {
-            schemaVersion: 1,
-            engineId: "lossless-claw",
-            policyFingerprint: "policy-1",
+      await expect(records.lookup(bindingStoreKey(identity))).resolves.toMatchObject({
+        metadata: {
+          stored: {
+            version: 1,
+            state: "active",
+            binding: {
+              threadId: "thread-json",
+              cwd: "/repo",
+              contextEngine: {
+                schemaVersion: 1,
+                engineId: "lossless-claw",
+                policyFingerprint: "policy-1",
+              },
+            },
           },
         },
       });
@@ -614,7 +616,9 @@ describe("Codex app-server binding store", () => {
         threadId: "thread-json",
         cwd: "/repo",
       });
-      expect(state.lookup(bindingStoreKey(identity))).not.toHaveProperty("lease");
+      expect((await records.lookup(bindingStoreKey(identity)))?.metadata.stored).not.toHaveProperty(
+        "lease",
+      );
       await expect(store.mutate(identity, { kind: "clear" })).resolves.toBe(true);
       await expect(store.read(identity)).resolves.toBeUndefined();
     } finally {
@@ -623,9 +627,190 @@ describe("Codex app-server binding store", () => {
     }
   });
 
+  it("stores frozen workspace instructions atomically with bounded binding metadata", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-bootstrap-state-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    try {
+      const records = createPluginBlobStoreForTests<CodexAppServerBindingRecordMetadata>(
+        "codex",
+        {
+          namespace: "app-server-binding-record-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(records);
+      const identity = { kind: "session" as const, agentId: "main", sessionId: "large-bootstrap" };
+      // Matches the documented 50,000-character per-agent bootstrap example while
+      // proving that a character budget is not a safe bound for a UTF-8 state row.
+      const instructions = "界".repeat(50_000);
+
+      await expect(
+        store.mutate(identity, {
+          kind: "set",
+          binding: {
+            threadId: "thread-large-bootstrap",
+            cwd: "/repo",
+            agentWorkspaceDeveloperInstructions: instructions,
+          },
+        }),
+      ).resolves.toBe(true);
+
+      const initialRecord = await records.lookup(bindingStoreKey(identity));
+      expect(initialRecord).toMatchObject({
+        sizeBytes: Buffer.byteLength(instructions, "utf8"),
+        metadata: {
+          version: 1,
+          stored: {
+            state: "active",
+            binding: { threadId: "thread-large-bootstrap", cwd: "/repo" },
+          },
+          instructions: {
+            version: 1,
+            sizeBytes: Buffer.byteLength(instructions, "utf8"),
+          },
+        },
+      });
+      expect(initialRecord?.metadata.stored).not.toHaveProperty(
+        "binding.agentWorkspaceDeveloperInstructions",
+      );
+      await expect(store.read(identity)).resolves.toMatchObject({
+        threadId: "thread-large-bootstrap",
+        agentWorkspaceDeveloperInstructions: instructions,
+      });
+      await expect(records.entries()).resolves.toHaveLength(1);
+
+      await expect(
+        store.mutate(identity, {
+          kind: "patch",
+          threadId: "thread-large-bootstrap",
+          patch: { model: "gpt-5.6-sol" },
+        }),
+      ).resolves.toBe(true);
+      await expect(store.read(identity)).resolves.toMatchObject({
+        model: "gpt-5.6-sol",
+        agentWorkspaceDeveloperInstructions: instructions,
+      });
+      await expect(records.entries()).resolves.toHaveLength(1);
+
+      const replacementInstructions = `${instructions}\nA later frozen generation.`;
+      await expect(
+        store.mutate(identity, {
+          kind: "patch",
+          threadId: "thread-large-bootstrap",
+          patch: { agentWorkspaceDeveloperInstructions: replacementInstructions },
+        }),
+      ).resolves.toBe(true);
+      await expect(store.read(identity)).resolves.toMatchObject({
+        agentWorkspaceDeveloperInstructions: replacementInstructions,
+      });
+      await expect(records.entries()).resolves.toHaveLength(1);
+      await expect(records.lookup(bindingStoreKey(identity))).resolves.toMatchObject({
+        sizeBytes: Buffer.byteLength(replacementInstructions, "utf8"),
+      });
+    } finally {
+      resetPluginBlobStoreForTests();
+      resetPluginStateStoreForTests();
+    }
+  });
+
+  it("clears corrupt instruction bytes only for their exact storage revision", async () => {
+    const { records } = createStateStore();
+    const identity = { kind: "conversation" as const, bindingId: "corrupt-instructions" };
+    const key = bindingStoreKey(identity);
+    const store = createCodexAppServerBindingStore(records);
+    await store.mutate(identity, {
+      kind: "set",
+      binding: {
+        threadId: "thread-corrupt-instructions",
+        cwd: "/repo",
+        agentWorkspaceDeveloperInstructions: "frozen instructions",
+      },
+    });
+    const record = await records.lookup(key);
+    if (!record) {
+      throw new Error("expected binding record");
+    }
+    await records.register(key, new TextEncoder().encode("corrupt"), record.metadata);
+
+    let corruption: CodexAppServerInstructionSnapshotError | undefined;
+    try {
+      await store.read(identity);
+    } catch (error) {
+      if (error instanceof CodexAppServerInstructionSnapshotError) {
+        corruption = error;
+      }
+    }
+    expect(corruption?.storageRevision).toBe(record.metadata.revision);
+    await expect(
+      store.mutate(identity, {
+        kind: "clear",
+        threadId: "thread-corrupt-instructions",
+        expectedStorageRevision: corruption!.storageRevision,
+      }),
+    ).resolves.toBe(true);
+    await expect(store.read(identity)).resolves.toBeUndefined();
+  });
+
+  it("does not clear a concurrently replaced instruction snapshot", async () => {
+    const stateDir = tempDirs.make("openclaw-codex-bootstrap-clear-fence-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    try {
+      const records = createPluginBlobStoreForTests<CodexAppServerBindingRecordMetadata>(
+        "codex",
+        {
+          namespace: "app-server-binding-record-clear-fence-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(records);
+      const identity = { kind: "session" as const, agentId: "main", sessionId: "clear-fence" };
+      await store.mutate(identity, {
+        kind: "set",
+        binding: {
+          threadId: "thread-clear-fence",
+          cwd: "/repo",
+          agentWorkspaceDeveloperInstructions: "甲".repeat(50_000),
+        },
+      });
+      const first = await records.lookup(bindingStoreKey(identity));
+      if (!first) {
+        throw new Error("expected first atomic binding record");
+      }
+      const firstRevision = first.metadata.revision;
+
+      await store.mutate(identity, {
+        kind: "patch",
+        threadId: "thread-clear-fence",
+        patch: { agentWorkspaceDeveloperInstructions: "乙".repeat(50_000) },
+      });
+      await expect(
+        store.mutate(identity, {
+          kind: "clear",
+          threadId: "thread-clear-fence",
+          expectedStorageRevision: firstRevision,
+        }),
+      ).resolves.toBe(false);
+      await expect(store.read(identity)).resolves.toMatchObject({
+        threadId: "thread-clear-fence",
+        agentWorkspaceDeveloperInstructions: "乙".repeat(50_000),
+      });
+    } finally {
+      resetPluginBlobStoreForTests();
+      resetPluginStateStoreForTests();
+    }
+  });
+
   it("keeps a replacement thread when a stale clear completes later", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = { kind: "session" as const, agentId: "main", sessionId: "session-1" };
     await store.mutate(identity, {
       kind: "set",
@@ -651,12 +836,19 @@ describe("Codex app-server binding store", () => {
     vi.setSystemTime(new Date("2026-06-13T00:00:00.000Z"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-binding-state-"));
     try {
-      const state = createPluginStateSyncKeyedStoreForTests<StoredCodexAppServerBinding>("codex", {
-        namespace: "app-server-thread-bindings-clear-test",
-        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      });
-      const store = createCodexAppServerBindingStore(state);
+      const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+      const records = createPluginBlobStoreForTests<CodexAppServerBindingRecordMetadata>(
+        "codex",
+        {
+          namespace: "app-server-binding-record-clear-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(records);
       const normal = { kind: "conversation" as const, bindingId: "normal" };
       const legacy = { kind: "conversation" as const, bindingId: "legacy-source" };
       for (const identity of [normal, legacy]) {
@@ -668,17 +860,60 @@ describe("Codex app-server binding store", () => {
       }
 
       vi.advanceTimersByTime(10);
-      expect(state.lookup(bindingStoreKey(normal))).toBeUndefined();
-      expect(state.lookup(bindingStoreKey(legacy))).toEqual({ version: 1, state: "cleared" });
+      await expect(records.lookup(bindingStoreKey(normal))).resolves.toBeUndefined();
+      await expect(records.lookup(bindingStoreKey(legacy))).resolves.toMatchObject({
+        metadata: { stored: { version: 1, state: "cleared" } },
+      });
     } finally {
+      resetPluginBlobStoreForTests();
       resetPluginStateStoreForTests();
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
   });
 
+  it("reclaims expired binding records when a new write reaches the physical row limit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-13T00:00:00.000Z"));
+    const stateDir = tempDirs.make("openclaw-codex-binding-record-quota-");
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const records = createPluginBlobStoreForTests<CodexAppServerBindingRecordMetadata>(
+      "codex",
+      {
+        namespace: "app-server-binding-record-quota-test",
+        maxEntries: 1,
+        maxBytesPerEntry: 1024 * 1024,
+        maxBytesPerNamespace: 2 * 1024 * 1024,
+        overflowPolicy: "reject-new",
+      },
+      env,
+    );
+    const store = createCodexAppServerBindingStore(records);
+    const expired = { kind: "conversation" as const, bindingId: "expired" };
+    const replacement = { kind: "conversation" as const, bindingId: "replacement" };
+    await store.mutate(expired, {
+      kind: "set",
+      binding: { threadId: "thread-expired", cwd: "/repo" },
+    });
+    await expect(store.mutate(expired, { kind: "clear" })).resolves.toBe(true);
+
+    vi.advanceTimersByTime(10);
+    await expect(
+      store.mutate(replacement, {
+        kind: "set",
+        binding: { threadId: "thread-replacement", cwd: "/repo" },
+      }),
+    ).resolves.toBe(true);
+    await expect(records.entries()).resolves.toEqual([
+      expect.objectContaining({ key: bindingStoreKey(replacement) }),
+    ]);
+    await expect(store.read(replacement)).resolves.toMatchObject({
+      threadId: "thread-replacement",
+    });
+  });
+
   it("isolates identical session ids owned by different agents", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const first = { kind: "session" as const, agentId: "first", sessionId: "shared" };
     const second = { kind: "session" as const, agentId: "second", sessionId: "shared" };
 
@@ -699,8 +934,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("keeps one binding across physical session rotations for a stable session key", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const first = {
       kind: "session" as const,
       agentId: "main",
@@ -717,10 +952,10 @@ describe("Codex app-server binding store", () => {
     await store.withLease(second, async () => undefined);
 
     expect(bindingStoreKey(first)).toBe(bindingStoreKey(second));
-    expect(values.size).toBe(1);
-    expect(values.get(bindingStoreKey(second))).toMatchObject({ sessionId: "session-1" });
+    expect(recordValues.size).toBe(1);
+    expect(recordValues.get(bindingStoreKey(second))).toMatchObject({ sessionId: "session-1" });
     await expect(store.adoptSessionGeneration(second, first.sessionId)).resolves.toBe("adopted");
-    expect(values.get(bindingStoreKey(second))).toMatchObject({
+    expect(recordValues.get(bindingStoreKey(second))).toMatchObject({
       state: "active",
       sessionId: "session-2",
       binding: { threadId: "thread-1" },
@@ -738,8 +973,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("rejects a delayed adoption after a newer session generation wins", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const first = {
       kind: "session" as const,
       agentId: "main",
@@ -764,8 +999,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("rejects reclaim when another session generation wins after verification", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const first = {
       kind: "session" as const,
       agentId: "main",
@@ -802,8 +1037,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("does not create a retirement tombstone for a session without a Codex binding", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = {
       kind: "session" as const,
       agentId: "main",
@@ -812,7 +1047,7 @@ describe("Codex app-server binding store", () => {
     };
 
     await expect(store.retireSessionGeneration(identity)).resolves.toBe("absent");
-    expect(values.size).toBe(0);
+    expect(recordValues.size).toBe(0);
   });
 
   it("expires physical-session retirement fences but retains stable-key fences", async () => {
@@ -820,13 +1055,19 @@ describe("Codex app-server binding store", () => {
     vi.setSystemTime(new Date("2026-06-13T00:00:00.000Z"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-binding-state-"));
     try {
-      const state = createPluginStateSyncKeyedStoreForTests<StoredCodexAppServerBinding>("codex", {
-        namespace: "app-server-thread-bindings-retirement-test",
-        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
-        overflowPolicy: "reject-new",
-        env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      });
-      const store = createCodexAppServerBindingStore(state);
+      const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+      const records = createPluginBlobStoreForTests<CodexAppServerBindingRecordMetadata>(
+        "codex",
+        {
+          namespace: "app-server-binding-record-retirement-test",
+          maxEntries: 10,
+          maxBytesPerEntry: 1024 * 1024,
+          maxBytesPerNamespace: 2 * 1024 * 1024,
+          overflowPolicy: "reject-new",
+        },
+        env,
+      );
+      const store = createCodexAppServerBindingStore(records);
       const physical = {
         kind: "session" as const,
         agentId: "main",
@@ -845,31 +1086,29 @@ describe("Codex app-server binding store", () => {
         await expect(store.retireSessionGeneration(identity)).resolves.toBe("applied");
       }
 
-      expect(state.lookup(bindingStoreKey(physical))).toMatchObject({
-        state: "cleared",
-        retired: true,
+      await expect(records.lookup(bindingStoreKey(physical))).resolves.toMatchObject({
+        metadata: { stored: { state: "cleared", retired: true } },
       });
-      expect(state.lookup(bindingStoreKey(stable))).toMatchObject({
-        state: "cleared",
-        retired: true,
+      await expect(records.lookup(bindingStoreKey(stable))).resolves.toMatchObject({
+        metadata: { stored: { state: "cleared", retired: true } },
       });
 
       vi.advanceTimersByTime(2 * 60_000);
 
-      expect(state.lookup(bindingStoreKey(physical))).toBeUndefined();
-      expect(state.lookup(bindingStoreKey(stable))).toMatchObject({
-        state: "cleared",
-        retired: true,
+      await expect(records.lookup(bindingStoreKey(physical))).resolves.toBeUndefined();
+      await expect(records.lookup(bindingStoreKey(stable))).resolves.toMatchObject({
+        metadata: { stored: { state: "cleared", retired: true } },
       });
     } finally {
+      resetPluginBlobStoreForTests();
       resetPluginStateStoreForTests();
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
   });
 
   it("claims a cleared binding once without allowing the retired generation back in", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const previous = {
       kind: "session" as const,
       agentId: "main",
@@ -924,12 +1163,12 @@ describe("Codex app-server binding store", () => {
       }),
     ).resolves.toBe(false);
     await expect(store.mutate(previous, { kind: "clear" })).resolves.toBe(false);
-    expect(values.size).toBe(1);
+    expect(recordValues.size).toBe(1);
   });
 
   it("reclaims a stale stable generation only for the current OpenClaw session", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const previous = {
       kind: "session" as const,
       agentId: "main",
@@ -947,7 +1186,7 @@ describe("Codex app-server binding store", () => {
         expectedPreviousSessionId: "other-session",
       }),
     ).resolves.toBe(false);
-    expect(values.get(bindingStoreKey(previous))).toMatchObject({
+    expect(recordValues.get(bindingStoreKey(previous))).toMatchObject({
       state: "active",
       sessionId: "session-1",
     });
@@ -958,7 +1197,7 @@ describe("Codex app-server binding store", () => {
         expectedPreviousSessionId: previous.sessionId,
       }),
     ).resolves.toBe(true);
-    expect(values.get(bindingStoreKey(current))).toEqual({
+    expect(recordValues.get(bindingStoreKey(current))).toEqual({
       version: 1,
       state: "cleared",
       sessionId: "session-2",
@@ -993,8 +1232,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("preserves a stale private supervision binding instead of reclaiming it as empty", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const previous = {
       kind: "session" as const,
       agentId: "main",
@@ -1031,7 +1270,7 @@ describe("Codex app-server binding store", () => {
         expectedPreviousSessionId: previous.sessionId,
       }),
     ).resolves.toBe(false);
-    expect(values.get(bindingStoreKey(previous))).toMatchObject({
+    expect(recordValues.get(bindingStoreKey(previous))).toMatchObject({
       state: "active",
       sessionId: previous.sessionId,
       binding: { threadId: "thread-supervised", connectionScope: "supervision" },
@@ -1044,8 +1283,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("fences a retired physical generation until its successor claims the stable key", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const previous = {
       kind: "session" as const,
       agentId: "main",
@@ -1060,7 +1299,7 @@ describe("Codex app-server binding store", () => {
 
     await expect(store.retireSessionGeneration(previous)).resolves.toBe("applied");
     await expect(store.mutate(previous, { kind: "clear" })).resolves.toBe(true);
-    expect(values.get(bindingStoreKey(previous))).toEqual({
+    expect(recordValues.get(bindingStoreKey(previous))).toEqual({
       version: 1,
       state: "cleared",
       retired: true,
@@ -1077,7 +1316,7 @@ describe("Codex app-server binding store", () => {
     );
 
     await store.withLease(current, async () => undefined);
-    expect(values.get(bindingStoreKey(previous))).toEqual({
+    expect(recordValues.get(bindingStoreKey(previous))).toEqual({
       version: 1,
       state: "cleared",
       retired: true,
@@ -1106,8 +1345,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("keeps a retired in-place generation fenced until it is verified", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = {
       kind: "session" as const,
       agentId: "main",
@@ -1121,7 +1360,7 @@ describe("Codex app-server binding store", () => {
     await store.retireSessionGeneration(identity);
 
     await expect(store.resetSessionGeneration(identity)).resolves.toBe("conflict");
-    expect(values.get(bindingStoreKey(identity))).toEqual({
+    expect(recordValues.get(bindingStoreKey(identity))).toEqual({
       version: 1,
       state: "cleared",
       retired: true,
@@ -1136,8 +1375,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("verifies and releases a retired fence for the still-current stable session id", async () => {
-    const { state, values } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = {
       kind: "session" as const,
       agentId: "main",
@@ -1164,7 +1403,7 @@ describe("Codex app-server binding store", () => {
         expectedPreviousSessionId: plan.expectedPreviousSessionId,
       }),
     ).resolves.toBe(true);
-    expect(values.get(bindingStoreKey(identity))).toEqual({
+    expect(recordValues.get(bindingStoreKey(identity))).toEqual({
       version: 1,
       state: "cleared",
       sessionId: identity.sessionId,
@@ -1180,8 +1419,8 @@ describe("Codex app-server binding store", () => {
   it("recovers a retired in-place generation through the authoritative session store", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-reset-reclaim-"));
     const storePath = path.join(root, "sessions.json");
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = {
       kind: "session" as const,
       agentId: "main",
@@ -1221,18 +1460,14 @@ describe("Codex app-server binding store", () => {
 
   it("drains an in-flight ownership mutation and rejects late attachment during archive", async () => {
     const fixture = createStateStore();
-    const stateUpdate = fixture.state.update;
-    if (!stateUpdate) {
-      throw new Error("test state store must support atomic updates");
-    }
-    const originalUpdate = stateUpdate.bind(fixture.state);
+    const originalMutate = fixture.records.mutate.bind(fixture.records);
     let startArchive: (() => void) | undefined;
-    fixture.state.update = (...args) => {
+    fixture.records.mutate = async (...args) => {
       startArchive?.();
       startArchive = undefined;
-      return originalUpdate(...args);
+      return await originalMutate(...args);
     };
-    const store = createCodexAppServerBindingStore(fixture.state);
+    const store = createCodexAppServerBindingStore(fixture.records);
     const firstIdentity = { kind: "conversation" as const, bindingId: "first" };
     const lateIdentity = { kind: "conversation" as const, bindingId: "late" };
     let releaseArchive!: () => void;
@@ -1293,8 +1528,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("patches only the expected thread without advancing history implicitly", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = { kind: "conversation" as const, bindingId: "binding-1" };
     const historyCoveredThrough = "2026-01-01T00:00:00.000Z";
     await store.mutate(identity, {
@@ -1323,8 +1558,8 @@ describe("Codex app-server binding store", () => {
   });
 
   it("rejects stale patches and absent-only writes", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const store = createCodexAppServerBindingStore(records);
     const identity = { kind: "conversation" as const, bindingId: "binding-1" };
     await store.mutate(identity, {
       kind: "set",
@@ -1470,9 +1705,9 @@ describe("Codex app-server binding store", () => {
 
   it("serializes writes from another facade behind a native-compaction lease", async () => {
     vi.useFakeTimers();
-    const { state } = createStateStore();
-    const owner = createCodexAppServerBindingStore(state);
-    const peer = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const owner = createCodexAppServerBindingStore(records);
+    const peer = createCodexAppServerBindingStore(records);
     const identity = { kind: "conversation" as const, bindingId: "binding-1" };
     await owner.mutate(identity, {
       kind: "set",
@@ -1502,9 +1737,9 @@ describe("Codex app-server binding store", () => {
 
   it("leases an absent binding before creating its first thread", async () => {
     vi.useFakeTimers();
-    const { state } = createStateStore();
-    const owner = createCodexAppServerBindingStore(state);
-    const peer = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const owner = createCodexAppServerBindingStore(records);
+    const peer = createCodexAppServerBindingStore(records);
     const identity = { kind: "conversation" as const, bindingId: "binding-new" };
     let peerFinished = false;
     let peerWrite!: Promise<boolean>;
@@ -1539,9 +1774,9 @@ describe("Codex app-server binding store", () => {
   });
 
   it("releases a lease when its owner callback rejects", async () => {
-    const { state } = createStateStore();
-    const owner = createCodexAppServerBindingStore(state);
-    const peer = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const owner = createCodexAppServerBindingStore(records);
+    const peer = createCodexAppServerBindingStore(records);
     const identity = { kind: "conversation" as const, bindingId: "binding-rejected-owner" };
     await owner.mutate(identity, {
       kind: "set",
@@ -1564,9 +1799,9 @@ describe("Codex app-server binding store", () => {
 
   it("renews a live lease across a long app-server request", async () => {
     vi.useFakeTimers();
-    const { state } = createStateStore();
-    const owner = createCodexAppServerBindingStore(state);
-    const peer = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const owner = createCodexAppServerBindingStore(records);
+    const peer = createCodexAppServerBindingStore(records);
     const identity = { kind: "conversation" as const, bindingId: "binding-renewed-owner" };
     await owner.mutate(identity, {
       kind: "set",
@@ -1612,9 +1847,9 @@ describe("Codex app-server binding store", () => {
 
   it("fences an expired lease owner after a peer takes over", async () => {
     vi.useFakeTimers();
-    const { state } = createStateStore();
-    const owner = createCodexAppServerBindingStore(state);
-    const peer = createCodexAppServerBindingStore(state);
+    const { records } = createStateStore();
+    const owner = createCodexAppServerBindingStore(records);
+    const peer = createCodexAppServerBindingStore(records);
     const identity = { kind: "conversation" as const, bindingId: "binding-stale-owner" };
     await owner.mutate(identity, {
       kind: "set",
@@ -1644,8 +1879,8 @@ describe("Codex app-server binding store", () => {
 
   it("surfaces heartbeat lease loss without deleting the replacement owner", async () => {
     vi.useFakeTimers();
-    const { state, values } = createStateStore();
-    const owner = createCodexAppServerBindingStore(state);
+    const { records, recordValues } = createStateStore();
+    const owner = createCodexAppServerBindingStore(records);
     const identity = { kind: "conversation" as const, bindingId: "binding-replaced-owner" };
     await owner.mutate(identity, {
       kind: "set",
@@ -1665,16 +1900,27 @@ describe("Codex app-server binding store", () => {
     });
     await ownerStarted;
     const key = bindingStoreKey(identity);
-    const current = values.get(key)!;
-    values.set(key, {
-      ...current,
-      lease: { token: "peer-owner", expiresAt: Date.now() + 120_000 },
+    await records.mutate(key, (current) => {
+      if (!current) {
+        throw new Error("expected binding record");
+      }
+      return {
+        kind: "set",
+        bytes: current.bytes,
+        metadata: {
+          ...current.metadata,
+          stored: {
+            ...current.metadata.stored,
+            lease: { token: "peer-owner", expiresAt: Date.now() + 120_000 },
+          },
+        },
+      };
     });
 
     await vi.advanceTimersByTimeAsync(30_000);
     releaseOwner();
     await expect(ownerRun).rejects.toThrow("Lost Codex binding lease");
-    expect(values.get(key)?.lease?.token).toBe("peer-owner");
+    expect(recordValues.get(key)?.lease?.token).toBe("peer-owner");
   });
 
   it("rejects empty storage identities", () => {

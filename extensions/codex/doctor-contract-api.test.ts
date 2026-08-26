@@ -2,8 +2,11 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { OpenBlobStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
+  createPluginBlobStoreForTests,
   createPluginStateKeyedStoreForTests,
+  resetPluginBlobStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import type {
@@ -12,18 +15,26 @@ import type {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { getSessionEntry, upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   legacyConfigRules,
   normalizeCompatibilityConfig,
   stateMigrations,
 } from "./doctor-contract-api.js";
 import {
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES,
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES_PER_ENTRY,
+  CODEX_APP_SERVER_BINDING_RECORD_MAX_ENTRIES,
+  CODEX_APP_SERVER_BINDING_RECORD_NAMESPACE,
+} from "./src/app-server/session-binding-meta.js";
+import {
   bindingStoreKey,
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
   CODEX_APP_SERVER_BINDING_NAMESPACE,
   createStoredCodexAppServerBinding,
+  encodeCodexAppServerBindingRecord,
   hashCodexAppServerBindingFingerprint,
+  type CodexAppServerBindingRecordMetadata,
   type StoredCodexAppServerBinding,
 } from "./src/app-server/session-binding.js";
 import { legacyCodexConversationBindingId } from "./src/conversation-binding-data.js";
@@ -33,6 +44,9 @@ function createDoctorContext(
   afterRegister?: () => Promise<void>,
 ): PluginDoctorStateMigrationContext {
   return {
+    openPluginBlobStore<TMetadata>(options: OpenBlobStoreOptions) {
+      return createPluginBlobStoreForTests<TMetadata>("codex", options, env);
+    },
     openPluginStateKeyedStore<T>(options: OpenKeyedStoreOptions) {
       const store = createPluginStateKeyedStoreForTests<T>("codex", {
         ...options,
@@ -56,6 +70,16 @@ function openBindingStore(env: NodeJS.ProcessEnv) {
   return createDoctorContext(env).openPluginStateKeyedStore<StoredCodexAppServerBinding>({
     namespace: CODEX_APP_SERVER_BINDING_NAMESPACE,
     maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+    overflowPolicy: "reject-new",
+  });
+}
+
+function openBindingRecordStore(env: NodeJS.ProcessEnv) {
+  return createDoctorContext(env).openPluginBlobStore!<CodexAppServerBindingRecordMetadata>({
+    namespace: CODEX_APP_SERVER_BINDING_RECORD_NAMESPACE,
+    maxEntries: CODEX_APP_SERVER_BINDING_RECORD_MAX_ENTRIES,
+    maxBytesPerEntry: CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES_PER_ENTRY,
+    maxBytesPerNamespace: CODEX_APP_SERVER_BINDING_RECORD_MAX_BYTES,
     overflowPolicy: "reject-new",
   });
 }
@@ -137,6 +161,8 @@ async function createBindingMigrationFixture(options: {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
+  resetPluginBlobStoreForTests();
   resetPluginStateStoreForTests();
 });
 
@@ -1296,6 +1322,100 @@ describe("codex doctor contract", () => {
 
     await removeCodexDoctorFixture(outerDir);
     await fs.rm(outsideDir, { recursive: true, force: true });
+  });
+
+  it("moves keyed bindings into one authoritative atomic record before runtime", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-doctor-record-"));
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const context = createDoctorContext(env);
+    const legacy = openBindingStore(env);
+    const key = "conversation:atomic-migration";
+    const instructions = "x".repeat(50_000);
+    await legacy.register(key, {
+      version: 1,
+      state: "active",
+      binding: {
+        threadId: "thread-atomic-migration",
+        cwd: "/repo",
+        agentWorkspaceDeveloperInstructions: instructions,
+      },
+    });
+    const migration = stateMigrations[1];
+    if (!migration) {
+      throw new Error("missing Codex atomic binding-record migration");
+    }
+    const params = {
+      config: {},
+      env,
+      stateDir,
+      oauthDir: path.join(stateDir, "oauth"),
+      context,
+    };
+
+    await expect(migration.detectLegacyState(params)).resolves.toMatchObject({
+      preview: [expect.stringContaining("atomic binding records")],
+    });
+    await expect(migration.migrateLegacyState(params)).resolves.toEqual({
+      changes: ["Migrated 1 Codex app-server binding row(s) to atomic records"],
+      warnings: [],
+    });
+
+    await expect(legacy.lookup(key)).resolves.toBeUndefined();
+    await expect(openBindingRecordStore(env).lookup(key)).resolves.toMatchObject({
+      bytes: new TextEncoder().encode(instructions),
+      metadata: {
+        stored: {
+          state: "active",
+          binding: { threadId: "thread-atomic-migration", cwd: "/repo" },
+        },
+      },
+    });
+    await expect(migration.detectLegacyState(params)).resolves.toBeNull();
+    await removeCodexDoctorFixture(stateDir);
+  });
+
+  it("does not resurrect a legacy binding behind an expired canonical record", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-25T12:00:00.000Z"));
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-doctor-expired-"));
+    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const context = createDoctorContext(env);
+    const legacy = openBindingStore(env);
+    const records = openBindingRecordStore(env);
+    const key = "conversation:expired-canonical";
+    const stale = {
+      version: 1 as const,
+      state: "active" as const,
+      binding: { threadId: "thread-stale", cwd: "/repo" },
+    };
+    await legacy.register(key, stale);
+    const cleared = encodeCodexAppServerBindingRecord({
+      stored: { version: 1, state: "cleared" },
+    });
+    await records.register(key, cleared.bytes, cleared.metadata, { ttlMs: 1 });
+    vi.advanceTimersByTime(2);
+    const migration = stateMigrations[1];
+    if (!migration) {
+      throw new Error("missing Codex atomic binding-record migration");
+    }
+    const params = {
+      config: {},
+      env,
+      stateDir,
+      oauthDir: path.join(stateDir, "oauth"),
+      context,
+    };
+
+    await expect(migration.migrateLegacyState(params)).resolves.toEqual({
+      changes: ["Retired 1 stale legacy Codex binding row(s) behind expired records"],
+      warnings: [],
+    });
+    await expect(legacy.lookup(key)).resolves.toBeUndefined();
+    const replacement = encodeCodexAppServerBindingRecord({ stored: stale });
+    await expect(
+      records.registerIfAbsent(key, replacement.bytes, replacement.metadata),
+    ).resolves.toBe(true);
+    await removeCodexDoctorFixture(stateDir);
   });
 
   it("renames old approval-routed destructive plugin policy values", () => {
