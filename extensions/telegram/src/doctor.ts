@@ -1,3 +1,7 @@
+import {
+  ACCESS_GROUP_ALLOW_FROM_PREFIX,
+  parseAccessGroupAllowFromEntry,
+} from "openclaw/plugin-sdk/access-groups";
 // Telegram plugin module implements doctor behavior.
 import type {
   ChannelDoctorAdapter,
@@ -46,7 +50,7 @@ type DoctorAccountRecord = Record<string, unknown>;
 type TelegramAllowFromListRef = {
   pathLabel: string;
   holder: Record<string, unknown>;
-  key: "allowFrom" | "groupAllowFrom";
+  key: string;
 };
 
 function sanitizeForLog(value: string): string {
@@ -98,6 +102,50 @@ function collectTelegramAllowFromLists(
   return refs;
 }
 
+function collectTelegramReferencedAccessGroupMemberLists(
+  cfg: OpenClawConfig,
+): TelegramAllowFromListRef[] {
+  const referenced = new Set<string>();
+  for (const scope of collectChannelAccountScopes({ cfg, channelId: "telegram" })) {
+    for (const ref of collectTelegramAllowFromLists(scope.prefix, scope.account)) {
+      const entries = ref.holder[ref.key];
+      if (!Array.isArray(entries)) {
+        continue;
+      }
+      for (const entry of entries) {
+        const name = parseAccessGroupAllowFromEntry(String(entry));
+        if (name) {
+          referenced.add(name);
+        }
+      }
+    }
+  }
+
+  const refs: TelegramAllowFromListRef[] = [];
+  for (const name of referenced) {
+    const group = cfg.accessGroups?.[name];
+    if (!group || group.type !== "message.senders") {
+      continue;
+    }
+    for (const key of ["*", "telegram"]) {
+      if (!Array.isArray(group.members[key])) {
+        continue;
+      }
+      refs.push({
+        pathLabel: `accessGroups.${name}.members.${key === "*" ? '"*"' : key}`,
+        holder: group.members,
+        key,
+      });
+    }
+  }
+  return refs;
+}
+
+function isValidStaticAccessGroupReference(cfg: OpenClawConfig, entry: string): boolean {
+  const name = parseAccessGroupAllowFromEntry(entry);
+  return Boolean(name && cfg.accessGroups?.[name]?.type === "message.senders");
+}
+
 function describeConfigValueType(value: unknown): string {
   if (Array.isArray(value)) {
     return "array";
@@ -145,12 +193,15 @@ function collectTelegramMalformedGroupsWarnings(params: {
 
 function scanTelegramInvalidAllowFromEntries(cfg: OpenClawConfig): TelegramAllowFromInvalidHit[] {
   const hits: TelegramAllowFromInvalidHit[] = [];
-  const scanList = (pathLabel: string, list: unknown) => {
+  const scanList = (pathLabel: string, list: unknown, allowStaticReference: boolean) => {
     if (!Array.isArray(list)) {
       return;
     }
     for (const entry of list) {
       const normalized = normalizeTelegramAllowFromEntry(entry);
+      if (allowStaticReference && isValidStaticAccessGroupReference(cfg, normalized)) {
+        continue;
+      }
       if (!normalized || normalized === "*" || isNumericTelegramSenderUserId(normalized)) {
         continue;
       }
@@ -160,8 +211,11 @@ function scanTelegramInvalidAllowFromEntries(cfg: OpenClawConfig): TelegramAllow
 
   for (const scope of collectChannelAccountScopes({ cfg, channelId: "telegram" })) {
     for (const ref of collectTelegramAllowFromLists(scope.prefix, scope.account)) {
-      scanList(ref.pathLabel, ref.holder[ref.key]);
+      scanList(ref.pathLabel, ref.holder[ref.key], true);
     }
+  }
+  for (const ref of collectTelegramReferencedAccessGroupMemberLists(cfg)) {
+    scanList(ref.pathLabel, ref.holder[ref.key], false);
   }
   return hits;
 }
@@ -346,7 +400,12 @@ async function maybeRepairTelegramAllowFromUsernames(cfg: OpenClawConfig): Promi
 
   const usernameHits = hits.filter((hit) => {
     const normalized = normalizeTelegramAllowFromEntry(hit.entry);
-    return normalized.length > 0 && !/\s/.test(normalized) && !normalized.startsWith("-");
+    return (
+      normalized.length > 0 &&
+      !normalized.startsWith(ACCESS_GROUP_ALLOW_FROM_PREFIX) &&
+      !/\s/.test(normalized) &&
+      !normalized.startsWith("-")
+    );
   });
 
   if (usernameHits.length === 0) {
@@ -463,6 +522,10 @@ async function maybeRepairTelegramAllowFromUsernames(cfg: OpenClawConfig): Promi
         out.push(normalized);
         continue;
       }
+      if (normalized.startsWith(ACCESS_GROUP_ALLOW_FROM_PREFIX)) {
+        out.push(normalized);
+        continue;
+      }
       const resolved = await resolveUserId(String(entry));
       if (resolved) {
         out.push(resolved);
@@ -498,6 +561,9 @@ async function maybeRepairTelegramAllowFromUsernames(cfg: OpenClawConfig): Promi
     for (const ref of collectTelegramAllowFromLists(scope.prefix, scope.account)) {
       await repairList(ref.pathLabel, ref.holder, ref.key);
     }
+  }
+  for (const ref of collectTelegramReferencedAccessGroupMemberLists(next)) {
+    await repairList(ref.pathLabel, ref.holder, ref.key);
   }
 
   if (changes.length === 0) {

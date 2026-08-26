@@ -4,6 +4,8 @@
  * Merges DM/group allowlists and checks normalized sender entries.
  */
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
+import type { AccessGroupConfig } from "../config/types.access-groups.js";
+import type { ChannelId } from "./plugins/types.public.js";
 
 /**
  * Prefix that marks an allowFrom entry as an access-group reference instead of a sender id.
@@ -20,6 +22,37 @@ export function parseAccessGroupAllowFromEntry(entry: string): string | null {
   }
   const name = trimmed.slice(ACCESS_GROUP_ALLOW_FROM_PREFIX.length).trim();
   return name.length > 0 ? name : null;
+}
+
+/** Projects statically enumerable access-group references into concrete channel sender entries. */
+export function projectStaticAccessGroupAllowFrom(params: {
+  accessGroups?: Record<string, AccessGroupConfig>;
+  allowFrom?: Array<string | number> | null;
+  channel: ChannelId;
+}): { concreteEntries: string[]; unresolvedReferences: string[] } {
+  const concreteEntries: string[] = [];
+  const unresolvedReferences: string[] = [];
+  for (const entry of normalizeStringEntries(params.allowFrom ?? [])) {
+    const name = parseAccessGroupAllowFromEntry(entry);
+    if (!name) {
+      if (entry.startsWith(ACCESS_GROUP_ALLOW_FROM_PREFIX)) {
+        unresolvedReferences.push(entry);
+      } else {
+        concreteEntries.push(entry);
+      }
+      continue;
+    }
+    const group = params.accessGroups?.[name];
+    if (!group || group.type !== "message.senders") {
+      unresolvedReferences.push(entry);
+      continue;
+    }
+    concreteEntries.push(...(group.members["*"] ?? []), ...(group.members[params.channel] ?? []));
+  }
+  return {
+    concreteEntries: normalizeStringEntries(concreteEntries),
+    unresolvedReferences: normalizeStringEntries(unresolvedReferences),
+  };
 }
 
 /**

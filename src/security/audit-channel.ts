@@ -247,6 +247,7 @@ export async function collectChannelSecurityFindingsCore(params: {
     const auditState = await resolveDmAllowAuditState({
       provider: input.provider,
       accountId: input.accountId,
+      accessGroups: params.cfg.accessGroups,
       allowFrom: input.allowFrom,
       dmPolicy: input.dmPolicy,
       normalizeEntry: input.normalizeEntry,
@@ -282,7 +283,11 @@ export async function collectChannelSecurityFindingsCore(params: {
       return auditState;
     }
 
-    if (input.dmPolicy !== "open" && auditState.admittedPrincipals.length === 0) {
+    if (
+      input.dmPolicy !== "open" &&
+      auditState.admittedPrincipals.length === 0 &&
+      !auditState.hasUnresolvedAccessGroups
+    ) {
       findings.push({
         checkId: `channels.${input.provider}.dm.locked`,
         severity: "info",

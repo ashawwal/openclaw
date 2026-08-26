@@ -5,10 +5,29 @@ import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   expandAllowFromWithAccessGroups,
+  projectStaticAccessGroupAllowFrom,
   resolveAccessGroupAllowFromState,
 } from "./access-groups.js";
 
 describe("access group allowlists", () => {
+  it("projects only statically enumerable references into concrete channel senders", () => {
+    const accessGroups = {
+      admins: { type: "message.senders", members: { "*": ["global"], telegram: ["123"] } },
+      audience: { type: "discord.channelAudience", guildId: "guild-1", channelId: "channel-1" },
+    } satisfies NonNullable<OpenClawConfig["accessGroups"]>;
+
+    expect(
+      projectStaticAccessGroupAllowFrom({
+        accessGroups,
+        allowFrom: ["456", "accessGroup:admins", "accessGroup:audience", "accessGroup:missing"],
+        channel: "telegram",
+      }),
+    ).toEqual({
+      concreteEntries: ["456", "global", "123"],
+      unresolvedReferences: ["accessGroup:audience", "accessGroup:missing"],
+    });
+  });
+
   it("reports static, missing, unsupported, failed, and compatibility expansion states", async () => {
     const cfg = {
       accessGroups: {

@@ -3,12 +3,17 @@ import { uniqueStrings } from "../../packages/normalization-core/src/string-norm
 import {
   ACCESS_GROUP_ALLOW_FROM_PREFIX,
   parseAccessGroupAllowFromEntry,
+  projectStaticAccessGroupAllowFrom,
 } from "../channels/allow-from.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
 import type { AccessGroupConfig } from "../config/types.access-groups.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 
-export { ACCESS_GROUP_ALLOW_FROM_PREFIX, parseAccessGroupAllowFromEntry };
+export {
+  ACCESS_GROUP_ALLOW_FROM_PREFIX,
+  parseAccessGroupAllowFromEntry,
+  projectStaticAccessGroupAllowFrom,
+};
 
 /** Resolves membership for an access group using the full OpenClaw config. */
 export type AccessGroupMembershipResolver = (params: {

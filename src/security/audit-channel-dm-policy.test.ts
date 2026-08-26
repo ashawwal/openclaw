@@ -218,6 +218,32 @@ describe("security audit channel dm policy", () => {
     expect(collisions[0]?.detail).toContain("work-example");
   });
 
+  it("audits concrete senders from referenced static access groups", async () => {
+    const findings = await collectChannelSecurityFindingsCore({
+      cfg: {
+        accessGroups: {
+          owners: {
+            type: "message.senders",
+            members: { whatsapp: ["user-a", "user-b"] },
+          },
+        },
+        session: { dmScope: "main" },
+      },
+      plugins: [
+        createDmPlugin({
+          accounts: {
+            default: { allowFrom: ["accessGroup:owners"] },
+          },
+        }),
+      ],
+    });
+
+    expect(collisionFindings(findings)).toHaveLength(1);
+    expect(findings.some((finding) => finding.checkId === "channels.whatsapp.dm.locked")).toBe(
+      false,
+    );
+  });
+
   it("keeps same-named accounts attributed across channels", async () => {
     const findings = await collectChannelSecurityFindingsCore({
       cfg: { session: { dmScope: "main" } },

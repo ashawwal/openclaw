@@ -413,6 +413,52 @@ describe("telegram doctor", () => {
     );
   });
 
+  it("validates static access-group members instead of the symbolic reference", async () => {
+    const warnings = await collectPreviewWarnings({
+      accessGroups: {
+        owners: {
+          type: "message.senders",
+          members: { telegram: ["123456789"] },
+        },
+      },
+      channels: {
+        telegram: {
+          allowFrom: ["accessGroup:owners"],
+        },
+      },
+    } as OpenClawConfig);
+
+    expect(warnings.join("\n")).not.toContain("invalid sender entries");
+  });
+
+  it("repairs invalid members in a referenced static access group", async () => {
+    lookupTelegramChatIdMock.mockResolvedValue("111");
+
+    const result = await repairConfig({
+      accessGroups: {
+        owners: {
+          type: "message.senders",
+          members: { telegram: ["@testuser"] },
+        },
+      },
+      channels: {
+        telegram: {
+          botToken: "123:abc",
+          allowFrom: ["accessGroup:owners"],
+        },
+      },
+    } as OpenClawConfig);
+
+    expect(result.config.accessGroups?.owners).toEqual({
+      type: "message.senders",
+      members: { telegram: ["111"] },
+    });
+    expect(result.config.channels?.telegram?.allowFrom).toEqual(["accessGroup:owners"]);
+    expect(result.changes).toContain(
+      "- accessGroups.owners.members.telegram: resolved @testuser -> 111",
+    );
+  });
+
   it("formats group-policy and empty-allowlist warnings", () => {
     const warnings = collectEmptyAllowlistWarnings({
       account: {
