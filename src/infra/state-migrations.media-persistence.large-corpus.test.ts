@@ -73,11 +73,18 @@ const SPARSE_EVENT_CHILD_SCRIPT = String.raw`
   import { DatabaseSync } from "node:sqlite";
   import { resolveOpenClawAgentSqlitePath } from "./src/state/openclaw-agent-db.ts";
   const originalPrepare = DatabaseSync.prototype.prepare;
+  const cursorSelects = new Set();
   let mediaSelects = 0;
   DatabaseSync.prototype.prepare = function (sql) {
     if (/^\s*select/i.test(sql) &&
         /(transcript_events|trajectory_runtime_events|session_windows)/i.test(sql)) {
       mediaSelects += 1;
+      if (
+        /from "(?:transcript_events|trajectory_runtime_events)"\s+where/i.test(sql) &&
+        /order by "session_id" asc, "seq" asc limit/i.test(sql)
+      ) {
+        cursorSelects.add(sql);
+      }
     }
     return originalPrepare.call(this, sql);
   };
@@ -90,6 +97,12 @@ const SPARSE_EVENT_CHILD_SCRIPT = String.raw`
   });
   const migrationSelects = mediaSelects;
   const db = new DatabaseSync(path, { readOnly: true });
+  const cursorPlanDetails = [...cursorSelects].flatMap((sql) => {
+    const bindings = Array((sql.match(/\?/g) ?? []).length).fill(0);
+    return originalPrepare.call(db, "EXPLAIN QUERY PLAN " + sql)
+      .all(...bindings)
+      .map((row) => row.detail);
+  });
   const transcript = JSON.parse(db.prepare(
     "SELECT event_json FROM transcript_events WHERE session_id=? AND seq=0",
   ).get("sparse-0").event_json);
@@ -99,6 +112,7 @@ const SPARSE_EVENT_CHILD_SCRIPT = String.raw`
   process.stdout.write(JSON.stringify({
     warnings: migration.warnings,
     changeCount: migration.changes.length,
+    cursorPlanDetails,
     migrationSelects,
     transcriptMediaPath: transcript.message.__openclaw?.media?.[0]?.path,
     transcriptHasLegacyCarrier: Object.hasOwn(transcript.message, "MediaPath"),
@@ -309,6 +323,7 @@ describe("legacy media persistence large corpus", () => {
       expect(result.status, result.stderr).toBe(0);
       const output = JSON.parse(result.stdout) as {
         changeCount: number;
+        cursorPlanDetails: string[];
         migrationSelects: number;
         transcriptHasLegacyCarrier: boolean;
         transcriptMediaPath: string;
@@ -324,6 +339,13 @@ describe("legacy media persistence large corpus", () => {
         trajectoryMediaPath: "/media/trajectory.png",
         trajectoryHasLegacyCarrier: false,
       });
+      expect(output.cursorPlanDetails.length).toBeGreaterThan(0);
+      expect(
+        output.cursorPlanDetails.every(
+          (detail) =>
+            detail.startsWith("SEARCH ") && detail.includes("session_id") && detail.includes("seq"),
+        ),
+      ).toBe(true);
       expect(output.migrationSelects).toBeLessThan(1_000);
     } finally {
       closeOpenClawAgentDatabases();

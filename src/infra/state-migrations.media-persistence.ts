@@ -131,14 +131,14 @@ function forEachMediaEventBatch(params: {
       .limit(MEDIA_MIGRATION_ROW_BATCH_SIZE);
     const after = cursor;
     if (after) {
+      // Keep SQLite on a composite primary-key seek. Expanding this tuple into
+      // OR branches restarts the index scan for every page.
       query = query.where((expression) =>
-        expression.or([
-          expression("session_id", ">", after.sessionId),
-          expression.and([
-            expression("session_id", "=", after.sessionId),
-            expression("seq", ">", after.seq),
-          ]),
-        ]),
+        expression(
+          expression.refTuple("session_id", "seq"),
+          ">",
+          expression.tuple(after.sessionId, after.seq),
+        ),
       );
     }
     const rows = executeSqliteQuerySync(params.database, query).rows;
