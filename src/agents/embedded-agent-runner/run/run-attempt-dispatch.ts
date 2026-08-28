@@ -1,4 +1,5 @@
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { recordExplicitSkillSelectionsForRun } from "../../../skills/runtime/run-usage.js";
 import { createAgentHarnessTaskRuntimeScope } from "../../../tasks/agent-harness-task-runtime-scope.js";
 import type { ToolOutcomeObserver } from "../../agent-tools.before-tool-call.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
@@ -533,9 +534,14 @@ export async function dispatchEmbeddedRunAttempt(input: {
     turnSourceAccountId: params.agentAccountId,
     turnSourceThreadId: params.currentThreadTs,
   });
-  const rawAttempt = await withGatewayToolCallerIdentity(callerIdentity, () =>
-    runEmbeddedAttemptWithBackend(attemptParams),
-  )
+  const rawAttempt = await withGatewayToolCallerIdentity(callerIdentity, () => {
+    recordExplicitSkillSelectionsForRun({
+      runId: attemptParams.runId,
+      selections: attemptParams.explicitSkillSelections,
+      skillsSnapshot: attemptParams.skillsSnapshot,
+    });
+    return runEmbeddedAttemptWithBackend(attemptParams);
+  })
     .catch((err: unknown): never => {
       throw control.getPostCompactionAbortError() ?? err;
     })
