@@ -34,6 +34,7 @@ import type {
 import type { createEmbeddedRunLaneController } from "./lane-controller.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import { prepareEmbeddedAttemptPromptExecution } from "./prompt-image-preparation.js";
+import { recordExplicitSkillSelectionsForRun } from "./skill-selection-usage.js";
 import { resolveSkillWorkshopAttemptParams } from "./skill-workshop-attempt-params.js";
 import type { CodeModeRecoveryState } from "./terminal-retry-state.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptTrajectoryRecorder } from "./types.js";
@@ -512,9 +513,14 @@ export async function dispatchEmbeddedRunAttempt(input: {
     turnSourceAccountId: params.agentAccountId,
     turnSourceThreadId: params.currentThreadTs,
   });
-  const rawAttempt = await withGatewayToolCallerIdentity(callerIdentity, () =>
-    runEmbeddedAttemptWithBackend(attemptParams),
-  )
+  const rawAttempt = await withGatewayToolCallerIdentity(callerIdentity, () => {
+    recordExplicitSkillSelectionsForRun({
+      runId: attemptParams.runId,
+      selections: attemptParams.explicitSkillSelections,
+      skillsSnapshot: attemptParams.skillsSnapshot,
+    });
+    return runEmbeddedAttemptWithBackend(attemptParams);
+  })
     .catch((err: unknown): never => {
       throw control.getPostCompactionAbortError() ?? err;
     })
