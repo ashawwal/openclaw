@@ -56,6 +56,13 @@ export function consumeRunSkillUsage(runId: string | undefined): RunSkillUsage[]
     return [];
   }
   const usage = skillUsageByRun.get(runId);
-  skillUsageByRun.delete(runId);
+  discardRunSkillUsage(runId);
   return usage ? [...usage.values()] : [];
+}
+
+/** Revokes any usage receipts that remain when the logical run settles. */
+export function discardRunSkillUsage(runId: string | undefined): void {
+  if (runId) {
+    skillUsageByRun.delete(runId);
+  }
 }
