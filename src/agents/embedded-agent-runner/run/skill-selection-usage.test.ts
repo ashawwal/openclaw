@@ -12,8 +12,8 @@ import { writeSkill } from "../../../skills/test-support/e2e-test-helpers.js";
 import { applySkillProposal, proposeCreateSkill } from "../../../skills/workshop/service.js";
 import { createOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { withTempDir } from "../../../test-utils/temp-dir.js";
+import { recordExplicitSkillSelectionsForRun } from "../../skill-selection-usage.js";
 import { createSkillWorkshopTool } from "../../tools/skill-workshop-tool.js";
-import { recordExplicitSkillSelectionsForRun } from "./skill-selection-usage.js";
 
 describe("explicit run skill usage", () => {
   it.runIf(process.platform !== "win32")(

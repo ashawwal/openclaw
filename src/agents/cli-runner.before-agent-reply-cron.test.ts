@@ -13,6 +13,7 @@ import {
   type DiagnosticEventPayload,
 } from "../infra/diagnostic-events.js";
 import type { HookRunner } from "../plugins/hooks.js";
+import { hasRunWorkspaceSkillUsage } from "../skills/runtime/run-usage.js";
 import { wrapRunWithTestPreparedAdmission } from "./admitted-run-context.test-support.js";
 import { testing as cliBackendsTesting } from "./cli-backends.test-support.js";
 import type { CliOutput } from "./cli-output-contracts.js";
@@ -201,6 +202,81 @@ afterEach(() => {
 });
 
 describe("runCliAgent before_agent_reply seam", () => {
+  const selectedSkillFile = "/tmp/test-workspace/skills/selected/SKILL.md";
+  const unselectedSkillFile = "/tmp/test-workspace/skills/unselected/SKILL.md";
+  const skillsSnapshot = {
+    prompt: "",
+    skills: [],
+    resolvedSkillCommands: [
+      {
+        selectionPath: selectedSkillFile,
+        skillFile: selectedSkillFile,
+        skillName: "selected",
+        skillSource: "workspace" as const,
+      },
+      {
+        selectionPath: unselectedSkillFile,
+        skillFile: unselectedSkillFile,
+        skillName: "unselected",
+        skillSource: "workspace" as const,
+      },
+    ],
+  };
+
+  it("arms only the selected workspace skill during a configured CLI run", async () => {
+    const runId = "cli-explicit-selection";
+    executePreparedCliRunMock.mockImplementationOnce(async () => {
+      expect(
+        hasRunWorkspaceSkillUsage({ runId, name: "selected", skillFile: selectedSkillFile }),
+      ).toBe(true);
+      expect(
+        hasRunWorkspaceSkillUsage({ runId, name: "unselected", skillFile: unselectedSkillFile }),
+      ).toBe(false);
+      return { text: "done" };
+    });
+
+    await runCliAgent({
+      ...baseRunParams,
+      runId,
+      skillsSnapshot,
+      explicitSkillSelections: [{ name: "selected", path: selectedSkillFile }],
+    });
+
+    expect(
+      hasRunWorkspaceSkillUsage({ runId, name: "selected", skillFile: selectedSkillFile }),
+    ).toBe(false);
+  });
+
+  it("revokes a failed CLI receipt before the same run ID is reused without a selection", async () => {
+    const runId = "cli-failed-selection-reuse";
+    executePreparedCliRunMock.mockImplementationOnce(async () => {
+      expect(
+        hasRunWorkspaceSkillUsage({ runId, name: "selected", skillFile: selectedSkillFile }),
+      ).toBe(true);
+      throw new Error("backend failed after receipt");
+    });
+
+    await expect(
+      runCliAgent({
+        ...baseRunParams,
+        runId,
+        skillsSnapshot,
+        explicitSkillSelections: [{ name: "selected", path: selectedSkillFile }],
+      }),
+    ).rejects.toThrow("backend failed after receipt");
+    expect(
+      hasRunWorkspaceSkillUsage({ runId, name: "selected", skillFile: selectedSkillFile }),
+    ).toBe(false);
+
+    executePreparedCliRunMock.mockImplementationOnce(async () => {
+      expect(
+        hasRunWorkspaceSkillUsage({ runId, name: "selected", skillFile: selectedSkillFile }),
+      ).toBe(false);
+      return { text: "unselected run" };
+    });
+    await runCliAgent({ ...baseRunParams, runId, skillsSnapshot });
+  });
+
   it.each([
     ["claude-cli", "user"],
     ["google-gemini-cli", "cron"],

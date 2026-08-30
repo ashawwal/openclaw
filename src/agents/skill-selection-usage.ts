@@ -1,11 +1,11 @@
 import path from "node:path";
-import { recordRunSkillUsage } from "../../../skills/runtime/run-usage.js";
+import { recordRunSkillUsage } from "../skills/runtime/run-usage.js";
 import type {
   ExplicitSkillSelection,
   ResolvedSkillCommand,
   SkillSnapshot,
-} from "../../../skills/types.js";
-import { canonicalizePath } from "../../utils/paths.js";
+} from "../skills/types.js";
+import { canonicalizePath } from "./utils/paths.js";
 
 function comparableSkillPath(value: string): string | undefined {
   const trimmed = value.trim();

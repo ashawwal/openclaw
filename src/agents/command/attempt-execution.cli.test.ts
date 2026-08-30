@@ -847,6 +847,7 @@ describe("CLI attempt execution", () => {
     sessionStore: Record<string, SessionEntry>;
     body: string;
     runId: string;
+    explicitSkillSelections?: RunAgentAttemptParams["explicitSkillSelections"];
     cwd?: string;
     onExecutionStarted?: () => void;
     onAgentEvent?: RunAgentAttemptParams["onAgentEvent"];
@@ -859,6 +860,7 @@ describe("CLI attempt execution", () => {
       workspaceDir: tmpDir,
       cwd: params.cwd,
       body: params.body,
+      explicitSkillSelections: params.explicitSkillSelections,
       runId: params.runId,
       opts: { onExecutionStarted: params.onExecutionStarted },
       ...(params.onAgentEvent ? { onAgentEvent: params.onAgentEvent } : {}),
@@ -867,6 +869,31 @@ describe("CLI attempt execution", () => {
       storePath,
     });
   }
+
+  it("forwards frozen explicit skill selections to the configured CLI runtime", async () => {
+    const sessionKey = "agent:main:direct:cli-explicit-skill";
+    const sessionEntry = makeSessionEntry("session-cli-explicit-skill");
+    const sessionStore = { [sessionKey]: sessionEntry };
+    const explicitSkillSelections = [
+      {
+        name: "receipt-proof",
+        path: path.join(tmpDir, "skills", "receipt-proof", "SKILL.md"),
+      },
+    ];
+    await writeSessionStoreSeed(sessionStore);
+    runCliAgentMock.mockResolvedValueOnce(makeCliResult("selected"));
+
+    await runClaudeCliAttempt({
+      sessionKey,
+      sessionEntry,
+      sessionStore,
+      body: "use the selected skill",
+      runId: "run-cli-explicit-skill",
+      explicitSkillSelections,
+    });
+
+    expect(firstRunCliAgentArg().explicitSkillSelections).toEqual(explicitSkillSelections);
+  });
 
   it.each(["assistant_output_started", "tool_execution_started"] as const)(
     "keeps CLI admission separate from observed %s",

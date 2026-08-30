@@ -1072,6 +1072,7 @@ export function runAgentAttempt(params: {
             imageOrder: params.opts.imageOrder,
             media: params.opts.media,
             skillsSnapshot: params.skillsSnapshot,
+            explicitSkillSelections: params.explicitSkillSelections,
             messageChannel: params.messageChannel,
             streamParams: params.opts.streamParams,
             messageProvider: params.opts.messageProvider ?? params.messageChannel,

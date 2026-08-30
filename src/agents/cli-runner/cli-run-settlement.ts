@@ -2,6 +2,7 @@ import { setReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/rep
 import { SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { discardRunSkillUsage } from "../../skills/runtime/run-usage.js";
 import {
   externalCliDiscoveryForProviderAuth,
   loadAuthProfileStoreForRuntime,
@@ -174,6 +175,9 @@ export async function settlePreparedCliRun(params: {
   } catch (error) {
     runError = error;
   }
+  // The CLI runner owns recovery for this logical execution. Revoke only after
+  // recovery settles, before fallible cleanup can leave reusable run IDs armed.
+  discardRunSkillUsage(runParams.runId);
   const terminalRunError = runError;
   let cleanupError: unknown;
   const recordCleanupError = (error: unknown) => {
