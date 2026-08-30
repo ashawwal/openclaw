@@ -49,7 +49,7 @@ import {
   type UserTurnInput,
   type UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
-import type { SkillSnapshot } from "../../skills/types.js";
+import type { ExplicitSkillSelection, SkillSnapshot } from "../../skills/types.js";
 import {
   getGeneratedMediaTaskIdsForSessionKey,
   hasNewGeneratedMediaTaskForSessionKey,
@@ -563,6 +563,7 @@ export function runAgentAttempt(params: {
   cwd?: string;
   body: string;
   transcriptBody?: string;
+  explicitSkillSelections?: ExplicitSkillSelection[];
   isFallbackRetry: boolean;
   modelRoutingProvenance: ModelFallbackAttemptProvenance;
   resolvedThinkLevel: ThinkLevel;
@@ -1275,6 +1276,7 @@ export function runAgentAttempt(params: {
     skillsSnapshot: params.skillsSnapshot,
     prompt: embeddedModelPrompt,
     transcriptPrompt: embeddedPersistencePrompt,
+    explicitSkillSelections: params.explicitSkillSelections,
     // CLI-origin retries cannot rely on transcript replay: orphan-user repair
     // removes the persisted CLI turn before the embedded prompt is submitted.
     images: shouldForwardImagesToEmbedded ? params.opts.images : undefined,
