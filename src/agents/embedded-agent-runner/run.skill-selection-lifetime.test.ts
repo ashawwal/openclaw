@@ -18,11 +18,13 @@ import {
 let runHarness: Awaited<ReturnType<typeof loadRunOverflowCompactionHarness>>;
 let hasRunWorkspaceSkillUsage: typeof import("../../skills/runtime/run-usage.js").hasRunWorkspaceSkillUsage;
 let createSkillWorkshopTool: typeof import("../tools/skill-workshop-tool.js").createSkillWorkshopTool;
+let getAgentRunContext: typeof import("../../infra/agent-run-registry.js").getAgentRunContext;
 
 beforeAll(async () => {
   runHarness = await loadRunOverflowCompactionHarness();
   ({ hasRunWorkspaceSkillUsage } = await import("../../skills/runtime/run-usage.js"));
   ({ createSkillWorkshopTool } = await import("../tools/skill-workshop-tool.js"));
+  ({ getAgentRunContext } = await import("../../infra/agent-run-registry.js"));
 });
 
 describe("explicit skill selection lifetime", () => {
@@ -74,12 +76,20 @@ describe("explicit skill selection lifetime", () => {
     const runId = "reused-cli-session-id";
     const skillFile = snapshotCommand?.skillFile ?? "";
     const failedAttempt = new Error("native harness stopped before turn finalization");
+    let failedRunInstance: { instanceId: string; runId: string } | undefined;
     mockedRunEmbeddedAttempt.mockImplementationOnce(async (attempt) => {
+      failedRunInstance = getAgentRunContext(runId)?.delegatedAuthority?.operationalRunInstance;
       expect(attempt.explicitSkillSelections).toEqual([
         { name: selected?.name, path: selected?.skillFile },
       ]);
       expect(attempt.skillsSnapshot?.resolvedSkillCommands).toContainEqual(snapshotCommand);
-      expect(hasRunWorkspaceSkillUsage({ runId, name: skillName, skillFile })).toBe(true);
+      expect(
+        hasRunWorkspaceSkillUsage({
+          operationalRunInstance: failedRunInstance,
+          name: skillName,
+          skillFile,
+        }),
+      ).toBe(true);
       throw failedAttempt;
     });
 
@@ -96,7 +106,13 @@ describe("explicit skill selection lifetime", () => {
         skillsSnapshot,
       }),
     ).rejects.toBe(failedAttempt);
-    expect(hasRunWorkspaceSkillUsage({ runId, name: skillName, skillFile })).toBe(false);
+    expect(
+      hasRunWorkspaceSkillUsage({
+        operationalRunInstance: failedRunInstance,
+        name: skillName,
+        skillFile,
+      }),
+    ).toBe(false);
 
     const tool = createSkillWorkshopTool({
       workspaceDir: state.workspaceDir,
@@ -113,7 +129,15 @@ describe("explicit skill selection lifetime", () => {
 
     let patchError: unknown;
     mockedRunEmbeddedAttempt.mockImplementationOnce(async () => {
-      expect(hasRunWorkspaceSkillUsage({ runId, name: skillName, skillFile })).toBe(false);
+      const replacementRunInstance =
+        getAgentRunContext(runId)?.delegatedAuthority?.operationalRunInstance;
+      expect(
+        hasRunWorkspaceSkillUsage({
+          operationalRunInstance: replacementRunInstance,
+          name: skillName,
+          skillFile,
+        }),
+      ).toBe(false);
       try {
         await tool.execute("patch-reused-session", {
           action: "patch",

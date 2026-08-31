@@ -1,7 +1,10 @@
 /** Publishes committed run accounting before retiring its runtime resources. */
 import { incrementCompactionCount } from "../../../auto-reply/reply/session-updates.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
-import { discardRunSkillUsage } from "../../../skills/runtime/run-usage.js";
+import {
+  discardRunSkillUsage,
+  discardRunWorkspaceSkillUsage,
+} from "../../../skills/runtime/run-usage.js";
 import { getAdmittedRunDelegatedAuthority } from "../../admitted-run-context.js";
 import {
   retireSessionMcpRuntime,
@@ -40,6 +43,7 @@ export async function settleEmbeddedRun(input: {
   // Workshop receipts authorize writes only while this logical run owns its id.
   // Settlement runs once after all retries and on every terminal exit.
   discardRunSkillUsage(params.runId);
+  discardRunWorkspaceSkillUsage(runtime.admittedRunContext.operationalRunInstance);
   // Publish committed bookkeeping before cleanup can throw or cancellation closes the caller.
   // A returned model/session id is never a substitute for the accepted host target.
   const committed = compaction.session.committedCompactionSuccessor;

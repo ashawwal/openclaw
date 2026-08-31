@@ -42,6 +42,7 @@ import {
   ToolInputError,
   type AnyAgentTool,
 } from "./common.js";
+import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import {
   executeSkillCollectionHistory,
   executeSkillCollectionReconcile,
@@ -478,6 +479,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
       }
       let expectedCurrentContentHash: string | undefined;
       let currentSkillContent: string | undefined;
+      let assertPatchMutationAuthorized: (() => void) | undefined;
       const patchOldString = action === "patch" ? readSkillPatchText(params).oldString : undefined;
       const requiresRead = action === "patch" || (action === "update" && options.updateProposals);
       if (requiresRead) {
@@ -525,10 +527,10 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         }
         expectedCurrentContentHash = readHash ?? preparedHash ?? contentHash;
         if (action === "patch") {
-          assertSkillPatchRunUsage({
+          assertPatchMutationAuthorized = assertSkillPatchRunUsage({
             skill: target,
             foregroundRepair,
-            runId: options.origin?.runId,
+            operationalRunInstance: getGatewayToolCallerIdentity()?.operationalRunInstance,
           });
           try {
             composeSkillBodyPatch(
@@ -640,6 +642,9 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
             }),
             expectedCurrentContentHash,
             composePatch: readSkillPatchText(params),
+            ...(assertPatchMutationAuthorized
+              ? { assertMutationAuthorized: assertPatchMutationAuthorized }
+              : {}),
             createdBy: "skill-workshop",
             ...(options.autonomousCapture || foregroundRepair ? { autonomousCapture: true } : {}),
             ...(options.origin ? { origin: options.origin } : {}),
@@ -713,6 +718,9 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
             eventActor: skillWorkshopAgentEventActor(options.agentId),
             proposal,
             reason: "Foreground repair of a used skill",
+            ...(assertPatchMutationAuthorized
+              ? { assertMutationAuthorized: assertPatchMutationAuthorized }
+              : {}),
           });
           if (autonomous.status === "pending") {
             return proposalResult(

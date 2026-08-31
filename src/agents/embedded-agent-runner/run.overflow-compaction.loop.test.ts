@@ -3,10 +3,18 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
+  claimAgentRunDelegatedAuthority,
+  releaseAgentRunDelegatedAuthority,
+} from "../../infra/agent-run-registry.js";
+import {
+  consumeRunSkillUsage,
+  discardRunWorkspaceSkillUsage,
+  hasRunWorkspaceSkillUsage,
+} from "../../skills/runtime/run-usage.js";
+import {
   prepareSystemAgentRunAdmission,
   type AdmittedRunContext,
 } from "../admitted-run-context.js";
-import { consumeRunSkillUsage, hasRunWorkspaceSkillUsage } from "../../skills/runtime/run-usage.js";
 import { createSubscribedSessionHarness } from "../embedded-agent-subscribe.e2e-harness.js";
 import {
   createEmbeddedRunReplayState,
@@ -202,6 +210,12 @@ describe("embedded run retry dispatch", () => {
       const skillFile = "/tmp/workspace/skills/release/SKILL.md";
       const bundledSkillFile = "/tmp/bundled/skills/lint/SKILL.md";
       const input = makeDispatchInput({}, createEmbeddedRunReplayState());
+      const admittedRunContext = input.params.admittedRunContext;
+      if (!admittedRunContext) {
+        throw new Error("expected admitted run context");
+      }
+      const operationalRunInstance = admittedRunContext.operationalRunInstance;
+      const authority = claimAgentRunDelegatedAuthority(operationalRunInstance);
       input.runtime.agentHarnessId = agentHarnessId;
       input.params.explicitSkillSelections = [
         { name: "release_alias", path: skillFile },
@@ -230,17 +244,23 @@ describe("embedded run retry dispatch", () => {
       await dispatchEmbeddedRunAttempt(input);
       await dispatchEmbeddedRunAttempt(input);
 
-      expect(hasRunWorkspaceSkillUsage({ runId: "run-1", name: "release", skillFile })).toBe(true);
       expect(
         hasRunWorkspaceSkillUsage({
-          runId: "run-1",
+          operationalRunInstance,
+          name: "release",
+          skillFile,
+        }),
+      ).toBe(true);
+      expect(
+        hasRunWorkspaceSkillUsage({
+          operationalRunInstance,
           name: "lint",
           skillFile: bundledSkillFile,
         }),
       ).toBe(false);
       expect(
         hasRunWorkspaceSkillUsage({
-          runId: "run-1",
+          operationalRunInstance,
           name: "unmatched",
           skillFile: "/tmp/workspace/skills/unmatched/SKILL.md",
         }),
@@ -254,6 +274,8 @@ describe("embedded run retry dispatch", () => {
           skillFile: bundledSkillFile,
         },
       ]);
+      discardRunWorkspaceSkillUsage(operationalRunInstance);
+      releaseAgentRunDelegatedAuthority(authority);
     },
   );
 

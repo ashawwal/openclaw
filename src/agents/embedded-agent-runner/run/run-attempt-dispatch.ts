@@ -515,7 +515,7 @@ export async function dispatchEmbeddedRunAttempt(input: {
   });
   const rawAttempt = await withGatewayToolCallerIdentity(callerIdentity, () => {
     recordExplicitSkillSelectionsForRun({
-      runId: attemptParams.runId,
+      operationalRunInstance: attemptParams.admittedRunContext.operationalRunInstance,
       selections: attemptParams.explicitSkillSelections,
       skillsSnapshot: attemptParams.skillsSnapshot,
     });

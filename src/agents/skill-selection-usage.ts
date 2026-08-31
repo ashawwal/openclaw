@@ -5,6 +5,7 @@ import type {
   ResolvedSkillCommand,
   SkillSnapshot,
 } from "../skills/types.js";
+import type { OperationalRunInstanceRef } from "./admitted-run-context.js";
 import { canonicalizePath } from "./utils/paths.js";
 
 function comparableSkillPath(value: string): string | undefined {
@@ -40,11 +41,11 @@ function indexUnambiguousSkillCommands(
 
 /** Records core-resolved explicit skill commands against the admitted run. */
 export function recordExplicitSkillSelectionsForRun(params: {
-  runId?: string;
+  operationalRunInstance?: OperationalRunInstanceRef;
   selections?: readonly ExplicitSkillSelection[];
   skillsSnapshot?: SkillSnapshot;
 }): void {
-  if (!params.runId || !params.selections?.length) {
+  if (!params.operationalRunInstance || !params.selections?.length) {
     return;
   }
   const snapshot = params.skillsSnapshot;
@@ -59,7 +60,7 @@ export function recordExplicitSkillSelectionsForRun(params: {
       continue;
     }
     recordRunSkillUsage({
-      runId: params.runId,
+      operationalRunInstance: params.operationalRunInstance,
       name: command.skillName,
       source: command.skillSource,
       activation: "command",

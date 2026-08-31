@@ -237,7 +237,7 @@ async function runCliAgentInternal(
   // Preparation freezes the CLI tool surface. Record only after it succeeds,
   // then retain the receipt through the runner's internal recovery attempts.
   recordExplicitSkillSelectionsForRun({
-    runId: context.params.runId,
+    operationalRunInstance: context.params.admittedRunContext.operationalRunInstance,
     selections: context.params.explicitSkillSelections,
     skillsSnapshot: context.params.skillsSnapshot,
   });

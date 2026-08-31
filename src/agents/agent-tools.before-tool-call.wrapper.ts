@@ -14,7 +14,6 @@ import {
 } from "../infra/diagnostic-trace-context.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
-import { recordRunSkillUsage } from "../skills/runtime/run-usage.js";
 import { copyBeforeToolCallWrapperMetadata } from "./agent-tool-metadata.js";
 import {
   copyAgentToolSourceExecutionGuard,
@@ -31,6 +30,7 @@ import {
   findSkillUsageMatch,
   prepareToolTerminalPresentation,
   reconcileLoopCallExecutionParams,
+  recordSkillUsageMatch,
   recordLoopOutcome,
   rememberPendingTerminalPresentation,
   resolveToolDiagnosticIdentity,
@@ -580,13 +580,7 @@ export function wrapToolWithBeforeToolCallHook(
           ctx,
         });
         if (skillMatch) {
-          recordRunSkillUsage({
-            runId: ctx?.runId,
-            name: skillMatch.skillName,
-            source: skillMatch.skillSource,
-            activation: skillMatch.activation,
-            ...(skillMatch.skillFile ? { skillFile: skillMatch.skillFile } : {}),
-          });
+          recordSkillUsageMatch({ ctx, match: skillMatch });
         }
         if (hookOptions.emitDiagnostics) {
           if (skillMatch) {

@@ -1,19 +1,38 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  claimAgentRunDelegatedAuthority,
+  releaseAgentRunDelegatedAuthority,
+} from "../../../infra/agent-run-registry.js";
 import { buildWorkspaceSkillCommandSpecs } from "../../../skills/discovery/command-specs.js";
 import { loadWorkspaceSkills } from "../../../skills/loading/workspace-skill-loader.js";
 import { buildSkillSnapshot } from "../../../skills/loading/workspace-skill-prompt.js";
 import {
   consumeRunSkillUsage,
+  discardRunWorkspaceSkillUsage,
   hasRunWorkspaceSkillUsage,
 } from "../../../skills/runtime/run-usage.js";
 import { writeSkill } from "../../../skills/test-support/e2e-test-helpers.js";
 import { applySkillProposal, proposeCreateSkill } from "../../../skills/workshop/service.js";
 import { createOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { withTempDir } from "../../../test-utils/temp-dir.js";
+import { createOperationalRunInstanceRef } from "../../admitted-run-context.js";
 import { recordExplicitSkillSelectionsForRun } from "../../skill-selection-usage.js";
+import type { AnyAgentTool } from "../../tools/common.js";
+import { wrapToolWithGatewayCallerIdentity } from "../../tools/gateway-caller-context.js";
 import { createSkillWorkshopTool } from "../../tools/skill-workshop-tool.js";
+
+function bindWorkshopToolToRun(
+  tool: AnyAgentTool,
+  operationalRunInstance: ReturnType<typeof createOperationalRunInstanceRef>,
+): AnyAgentTool {
+  return wrapToolWithGatewayCallerIdentity(tool, {
+    agentId: "main",
+    sessionKey: "explicit-skill-selection-test",
+    operationalRunInstance,
+  });
+}
 
 describe("explicit run skill usage", () => {
   it.runIf(process.platform !== "win32")(
@@ -61,6 +80,8 @@ describe("explicit run skill usage", () => {
           (command) => command.skillName === "release",
         );
         const runId = "allowed-symlink-run";
+        const operationalRunInstance = createOperationalRunInstanceRef(runId);
+        const authority = claimAgentRunDelegatedAuthority(operationalRunInstance);
 
         expect(selection?.skillFile).toBe(await fs.realpath(snapshotSkillFile));
         expect(snapshotSkill).toBeUndefined();
@@ -72,7 +93,7 @@ describe("explicit run skill usage", () => {
         });
 
         recordExplicitSkillSelectionsForRun({
-          runId,
+          operationalRunInstance,
           selections: selection?.skillFile
             ? [{ name: selection.name, path: selection.skillFile }]
             : [],
@@ -80,28 +101,36 @@ describe("explicit run skill usage", () => {
         });
 
         expect(
-          hasRunWorkspaceSkillUsage({ runId, name: "release", skillFile: snapshotSkillFile }),
+          hasRunWorkspaceSkillUsage({
+            operationalRunInstance,
+            name: "release",
+            skillFile: snapshotSkillFile,
+          }),
         ).toBe(true);
         expect(
           hasRunWorkspaceSkillUsage({
-            runId,
+            operationalRunInstance,
             name: "unrelated",
             skillFile: unrelatedSkillFile,
           }),
         ).toBe(false);
         consumeRunSkillUsage(runId);
+        discardRunWorkspaceSkillUsage(operationalRunInstance);
+        releaseAgentRunDelegatedAuthority(authority);
       });
     },
   );
 
   it("fails closed when two command identities share one admitted path", () => {
     const runId = "ambiguous-command-path-run";
+    const operationalRunInstance = createOperationalRunInstanceRef(runId);
+    const authority = claimAgentRunDelegatedAuthority(operationalRunInstance);
     const selectionPath = "/tmp/shared-target/SKILL.md";
     const firstSkillFile = "/tmp/workspace/skills/first/SKILL.md";
     const secondSkillFile = "/tmp/workspace/skills/second/SKILL.md";
 
     recordExplicitSkillSelectionsForRun({
-      runId,
+      operationalRunInstance,
       selections: [{ name: "first", path: selectionPath }],
       skillsSnapshot: {
         prompt: "",
@@ -123,13 +152,23 @@ describe("explicit run skill usage", () => {
       },
     });
 
-    expect(hasRunWorkspaceSkillUsage({ runId, name: "first", skillFile: firstSkillFile })).toBe(
-      false,
-    );
-    expect(hasRunWorkspaceSkillUsage({ runId, name: "second", skillFile: secondSkillFile })).toBe(
-      false,
-    );
+    expect(
+      hasRunWorkspaceSkillUsage({
+        operationalRunInstance,
+        name: "first",
+        skillFile: firstSkillFile,
+      }),
+    ).toBe(false);
+    expect(
+      hasRunWorkspaceSkillUsage({
+        operationalRunInstance,
+        name: "second",
+        skillFile: secondSkillFile,
+      }),
+    ).toBe(false);
     expect(consumeRunSkillUsage(runId)).toEqual([]);
+    discardRunWorkspaceSkillUsage(operationalRunInstance);
+    releaseAgentRunDelegatedAuthority(authority);
   });
 
   it("lets only the explicitly selected skill cross the Workshop write boundary", async () => {
@@ -174,21 +213,26 @@ describe("explicit run skill usage", () => {
         expect(selected?.skillFile).toBeTruthy();
 
         const runId = "explicit-selection-final-effect";
+        const operationalRunInstance = createOperationalRunInstanceRef(runId);
+        const authority = claimAgentRunDelegatedAuthority(operationalRunInstance);
         recordExplicitSkillSelectionsForRun({
-          runId,
+          operationalRunInstance,
           selections: selected?.skillFile
             ? [{ name: selected.name, path: selected.skillFile }]
             : [],
           skillsSnapshot: snapshot,
         });
 
-        const tool = createSkillWorkshopTool({
-          workspaceDir,
-          env: testState.env,
-          config: { skills: { workshop: { autonomous: { mode: "auto" } } } },
-          agentId: "main",
-          origin: { agentId: "main", runId },
-        });
+        const tool = bindWorkshopToolToRun(
+          createSkillWorkshopTool({
+            workspaceDir,
+            env: testState.env,
+            config: { skills: { workshop: { autonomous: { mode: "auto" } } } },
+            agentId: "main",
+            origin: { agentId: "main", runId },
+          }),
+          operationalRunInstance,
+        );
         await tool.execute("prepare-selected", {
           action: "prepare_patch",
           skill_name: selectedName,
@@ -202,6 +246,46 @@ describe("explicit run skill usage", () => {
             new_string: "Keep NEW_SELECTED guidance.",
           }),
         ).resolves.toMatchObject({ details: { status: "applied" } });
+
+        const replacementRunInstance = createOperationalRunInstanceRef(runId);
+        const replacementAuthority = claimAgentRunDelegatedAuthority(replacementRunInstance);
+        expect(
+          hasRunWorkspaceSkillUsage({
+            operationalRunInstance,
+            name: selectedName,
+            skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
+          }),
+        ).toBe(false);
+        expect(
+          hasRunWorkspaceSkillUsage({
+            operationalRunInstance: replacementRunInstance,
+            name: selectedName,
+            skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
+          }),
+        ).toBe(false);
+        const replacementTool = bindWorkshopToolToRun(
+          createSkillWorkshopTool({
+            workspaceDir,
+            env: testState.env,
+            config: { skills: { workshop: { autonomous: { mode: "auto" } } } },
+            agentId: "main",
+            origin: { agentId: "main", runId },
+          }),
+          replacementRunInstance,
+        );
+        await replacementTool.execute("prepare-conflicting-replacement", {
+          action: "prepare_patch",
+          skill_name: selectedName,
+          old_string: "Keep NEW_SELECTED guidance.",
+        });
+        await expect(
+          replacementTool.execute("patch-conflicting-replacement", {
+            action: "patch",
+            skill_name: selectedName,
+            old_string: "Keep NEW_SELECTED guidance.",
+            new_string: "Keep BORROWED_SELECTED guidance.",
+          }),
+        ).rejects.toThrow(`skill "${selectedName}" was not used in this run`);
 
         await tool.execute("prepare-unselected", {
           action: "prepare_patch",
@@ -221,9 +305,16 @@ describe("explicit run skill usage", () => {
           fs.readFile(path.join(workspaceDir, "skills", selectedName, "SKILL.md"), "utf8"),
         ).resolves.toContain("Keep NEW_SELECTED guidance.");
         await expect(
+          fs.readFile(path.join(workspaceDir, "skills", selectedName, "SKILL.md"), "utf8"),
+        ).resolves.not.toContain("BORROWED_SELECTED");
+        await expect(
           fs.readFile(path.join(workspaceDir, "skills", unselectedName, "SKILL.md"), "utf8"),
         ).resolves.toContain("Keep OLD_UNSELECTED guidance.");
         consumeRunSkillUsage(runId);
+        discardRunWorkspaceSkillUsage(operationalRunInstance);
+        releaseAgentRunDelegatedAuthority(authority);
+        discardRunWorkspaceSkillUsage(replacementRunInstance);
+        releaseAgentRunDelegatedAuthority(replacementAuthority);
       } finally {
         await testState.cleanup();
       }

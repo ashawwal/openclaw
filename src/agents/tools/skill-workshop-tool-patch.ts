@@ -6,6 +6,7 @@ import { stripProposalFrontmatterForSkill } from "../../skills/workshop/frontmat
 import { findUniqueSkillPatchSpan } from "../../skills/workshop/service.js";
 import type { SkillWorkshopPreparedPatch } from "../../skills/workshop/types.js";
 import { readWritableWorkspaceSkill } from "../../skills/workshop/workspace-skill-read.js";
+import type { OperationalRunInstanceRef } from "../admitted-run-context.js";
 import { readToolStringParam, ToolInputError, type AnyAgentTool } from "./common.js";
 
 type WritableSkillPatchTarget = {
@@ -182,18 +183,22 @@ export function resolveSkillPatchAuthorization(params: {
 export function assertSkillPatchRunUsage(params: {
   skill: WritableSkillPatchTarget;
   foregroundRepair: boolean;
-  runId?: string;
-}): void {
-  if (
-    params.foregroundRepair &&
-    !hasRunWorkspaceSkillUsage({
-      runId: params.runId,
-      name: params.skill.skillKey,
-      skillFile: params.skill.skillFile,
-    })
-  ) {
-    throw new ToolInputError(
-      `skill "${params.skill.skillKey}" was not used in this run and cannot be repaired autonomously`,
-    );
-  }
+  operationalRunInstance?: OperationalRunInstanceRef;
+}): () => void {
+  const assertAuthorized = () => {
+    if (
+      params.foregroundRepair &&
+      !hasRunWorkspaceSkillUsage({
+        operationalRunInstance: params.operationalRunInstance,
+        name: params.skill.skillKey,
+        skillFile: params.skill.skillFile,
+      })
+    ) {
+      throw new ToolInputError(
+        `skill "${params.skill.skillKey}" was not used in this run and cannot be repaired autonomously`,
+      );
+    }
+  };
+  assertAuthorized();
+  return assertAuthorized;
 }

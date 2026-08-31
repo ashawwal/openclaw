@@ -1,3 +1,7 @@
+import {
+  getActiveAgentRunDelegatedAuthority,
+  type AgentRunDelegatedAuthority,
+} from "../../infra/agent-run-registry.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import type { SkillTelemetrySource } from "../types.js";
 
@@ -11,10 +15,24 @@ export type RunSkillUsage = Readonly<{
 }>;
 
 const skillUsageByRun = new Map<string, Map<string, RunSkillUsage>>();
+type RunSkillUsageInstance = Readonly<{ instanceId: string; runId: string }>;
+const workspaceSkillUsageByAuthority = new WeakMap<
+  AgentRunDelegatedAuthority,
+  Map<string, RunSkillUsage>
+>();
+
+function runSkillUsageKey(usage: RunSkillUsage): string {
+  return `${usage.source}\u0000${usage.name}\u0000${usage.activation}`;
+}
 
 /** Records the skills the foreground run demonstrably invoked or read. */
-export function recordRunSkillUsage(params: RunSkillUsage & { runId?: string }): void {
-  const runId = params.runId;
+export function recordRunSkillUsage(
+  params: RunSkillUsage & {
+    runId?: string;
+    operationalRunInstance?: RunSkillUsageInstance;
+  },
+): void {
+  const runId = params.runId ?? params.operationalRunInstance?.runId;
   if (!runId) {
     return;
   }
@@ -25,21 +43,42 @@ export function recordRunSkillUsage(params: RunSkillUsage & { runId?: string }):
     activation: params.activation,
     ...(params.skillFile ? { skillFile: params.skillFile } : {}),
   };
-  usage.set(`${record.source}\u0000${record.name}\u0000${record.activation}`, record);
+  usage.set(runSkillUsageKey(record), record);
   skillUsageByRun.set(runId, usage);
   pruneMapToMaxSize(skillUsageByRun, MAX_TRACKED_SKILL_USAGE_RUNS);
+
+  const operationalRunInstance = params.operationalRunInstance;
+  const delegatedAuthority = operationalRunInstance
+    ? getActiveAgentRunDelegatedAuthority(operationalRunInstance)
+    : undefined;
+  if (
+    record.source !== "workspace" ||
+    !record.skillFile ||
+    !operationalRunInstance ||
+    operationalRunInstance.runId !== runId ||
+    !delegatedAuthority
+  ) {
+    return;
+  }
+  const authorityUsage = workspaceSkillUsageByAuthority.get(delegatedAuthority) ?? new Map();
+  authorityUsage.set(runSkillUsageKey(record), record);
+  workspaceSkillUsageByAuthority.set(delegatedAuthority, authorityUsage);
 }
 
-/** Checks whether this run demonstrably used one writable workspace skill. */
+/** Checks exact, still-live admitted authority for one used writable workspace skill. */
 export function hasRunWorkspaceSkillUsage(params: {
-  runId: string | undefined;
+  operationalRunInstance: RunSkillUsageInstance | undefined;
   name: string;
   skillFile: string;
 }): boolean {
-  if (!params.runId) {
+  const operationalRunInstance = params.operationalRunInstance;
+  const delegatedAuthority = operationalRunInstance
+    ? getActiveAgentRunDelegatedAuthority(operationalRunInstance)
+    : undefined;
+  if (!delegatedAuthority) {
     return false;
   }
-  for (const usage of skillUsageByRun.get(params.runId)?.values() ?? []) {
+  for (const usage of workspaceSkillUsageByAuthority.get(delegatedAuthority)?.values() ?? []) {
     if (
       usage.source === "workspace" &&
       (usage.skillFile === params.skillFile || (!usage.skillFile && usage.name === params.name))
@@ -64,5 +103,17 @@ export function consumeRunSkillUsage(runId: string | undefined): RunSkillUsage[]
 export function discardRunSkillUsage(runId: string | undefined): void {
   if (runId) {
     skillUsageByRun.delete(runId);
+  }
+}
+
+/** Revokes only the repair receipts owned by one exact admitted execution. */
+export function discardRunWorkspaceSkillUsage(
+  operationalRunInstance: RunSkillUsageInstance | undefined,
+): void {
+  const delegatedAuthority = operationalRunInstance
+    ? getActiveAgentRunDelegatedAuthority(operationalRunInstance)
+    : undefined;
+  if (delegatedAuthority) {
+    workspaceSkillUsageByAuthority.delete(delegatedAuthority);
   }
 }

@@ -311,6 +311,7 @@ export async function proposeUpdateSkill(
     ...(goal ? { goal } : {}),
     ...(evidence ? { evidence } : {}),
   };
+  input.assertMutationAuthorized?.();
   const event = await writeSkillProposal({
     record,
     content: proposalContent,
