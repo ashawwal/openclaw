@@ -29,6 +29,7 @@ describe("runCodexAppServerAttempt authenticated hook context", () => {
     const sessionFile = path.join(tempDir, "authenticated-compaction.jsonl");
     const workspaceDir = path.join(tempDir, "authenticated-compaction-workspace");
     const params = createParams(sessionFile, workspaceDir);
+    params.sandboxSessionKey = "global";
     params.messageChannel = "telegram";
     params.messageProvider = "telegram";
     params.currentChannelId = "telegram:-100123";
@@ -55,6 +56,7 @@ describe("runCodexAppServerAttempt authenticated hook context", () => {
     const expectedContext = {
       accountId: "account-a",
       channel: "telegram",
+      sessionKey: "agent:main:session-1",
       messageProvider: "telegram",
       channelId: "-100123",
       chatId: "-100123",

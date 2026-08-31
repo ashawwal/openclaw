@@ -67,7 +67,7 @@ function expectAuthenticatedContext(ctx: CapturedContext | undefined) {
       chat: { id: CONVERSATION.id },
     },
   });
-  expect(ctx?.sessionKey).toContain("qa-channel:default:direct:ahmad");
+  expect(ctx?.sessionKey).toBe("agent:qa:main");
 }
 
 describe("Codex authenticated hook context product proof", () => {

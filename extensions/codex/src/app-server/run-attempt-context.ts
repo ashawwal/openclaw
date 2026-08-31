@@ -105,7 +105,7 @@ export async function prepareCodexAttemptContext(
     workspaceDir: params.workspaceDir,
     trigger: params.trigger,
     ...buildAgentHookContextChannelFields({
-      sessionKey: sandboxSessionKey,
+      sessionKey: contextSessionKey,
       messageChannel: params.messageChannel,
       messageProvider: params.messageProvider,
       currentChannelId: hookChannelId,
