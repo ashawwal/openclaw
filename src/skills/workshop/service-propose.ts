@@ -324,6 +324,7 @@ export async function proposeUpdateSkill(
       type: "created",
       actor: input.eventActor,
     }),
+    assertMutationAuthorized: input.assertMutationAuthorized,
     store: proposalStoreOptions(input.env),
   });
   await dispatchSkillProposalChanged({
