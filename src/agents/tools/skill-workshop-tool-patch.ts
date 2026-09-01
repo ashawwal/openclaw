@@ -181,7 +181,7 @@ export function resolveSkillPatchAuthorization(params: {
   return redeemPreparedSkillPatch(params);
 }
 
-export function assertSkillPatchRunUsage(params: {
+function assertSkillPatchRunUsage(params: {
   skill: WritableSkillPatchTarget;
   foregroundRepair: boolean;
   operationalRunInstance?: OperationalRunInstanceRef;
