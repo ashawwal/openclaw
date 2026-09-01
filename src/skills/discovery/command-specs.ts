@@ -11,8 +11,8 @@ import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snaps
 import { filterWorkspaceSkills, loadVisibleSkills } from "../loading/workspace-skill-loader.js";
 import type { SkillEligibilityContext, SkillCommandSpec, SkillEntry } from "../types.js";
 import { resolveEffectiveAgentSkillFilter } from "./agent-filter.js";
-import { sanitizeSkillCommandName, SKILL_COMMAND_MAX_LENGTH } from "./command-name.js";
 import { resolveSkillCommandIdentity } from "./command-identity.js";
+import { sanitizeSkillCommandName, SKILL_COMMAND_MAX_LENGTH } from "./command-name.js";
 import { filterUserInvocableSkillEntries, isSkillPromptVisible } from "./skill-index.js";
 
 const skillsLogger = createSubsystemLogger("skills");

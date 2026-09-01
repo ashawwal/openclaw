@@ -42,7 +42,6 @@ import {
   ToolInputError,
   type AnyAgentTool,
 } from "./common.js";
-import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import {
   executeSkillCollectionHistory,
   executeSkillCollectionReconcile,
@@ -67,8 +66,8 @@ import {
 } from "./skill-workshop-tool-helpers.js";
 import { createLibrarySkillWorkshopTool } from "./skill-workshop-tool-library.js";
 import {
-  assertSkillPatchRunUsage,
   executePrepareSkillPatch,
+  prepareAuthorizedSkillPatch,
   readSkillPatchText,
   resolveSkillPatchAuthorization,
 } from "./skill-workshop-tool-patch.js";
@@ -527,19 +526,11 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         }
         expectedCurrentContentHash = readHash ?? preparedHash ?? contentHash;
         if (action === "patch") {
-          assertPatchMutationAuthorized = assertSkillPatchRunUsage({
+          assertPatchMutationAuthorized = prepareAuthorizedSkillPatch({
             skill: target,
             foregroundRepair,
-            operationalRunInstance: getGatewayToolCallerIdentity()?.operationalRunInstance,
+            patch: readSkillPatchText(params),
           });
-          try {
-            composeSkillBodyPatch(
-              stripProposalFrontmatterForSkill(target.content),
-              readSkillPatchText(params),
-            );
-          } catch (error) {
-            throw new ToolInputError(error instanceof Error ? error.message : String(error));
-          }
         }
       }
 
