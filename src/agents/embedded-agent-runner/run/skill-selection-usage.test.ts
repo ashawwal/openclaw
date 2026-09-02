@@ -108,14 +108,12 @@ describe("explicit run skill usage", () => {
         expect(
           hasRunWorkspaceSkillUsage({
             operationalRunInstance,
-            name: "release",
             skillFile: snapshotSkillFile,
           }),
         ).toBe(true);
         expect(
           hasRunWorkspaceSkillUsage({
             operationalRunInstance,
-            name: "unrelated",
             skillFile: unrelatedSkillFile,
           }),
         ).toBe(false);
@@ -160,18 +158,74 @@ describe("explicit run skill usage", () => {
     expect(
       hasRunWorkspaceSkillUsage({
         operationalRunInstance,
-        name: "first",
         skillFile: firstSkillFile,
       }),
     ).toBe(false);
     expect(
       hasRunWorkspaceSkillUsage({
         operationalRunInstance,
-        name: "second",
         skillFile: secondSkillFile,
       }),
     ).toBe(false);
     expect(consumeRunSkillUsage(runId)).toEqual([]);
+    discardRunWorkspaceSkillUsage(operationalRunInstance);
+    releaseAgentRunDelegatedAuthority(authority);
+  });
+
+  it("retains receipts for explicitly selected same-name workspace skill files", () => {
+    const runId = "same-name-skill-files-run";
+    const operationalRunInstance = createOperationalRunInstanceRef(runId);
+    const authority = claimAgentRunDelegatedAuthority(operationalRunInstance);
+    const firstSkillFile = path.resolve("workspace/skills/first/SKILL.md");
+    const secondSkillFile = path.resolve("workspace/skills/second/SKILL.md");
+
+    recordExplicitSkillSelectionsForRun({
+      operationalRunInstance,
+      selections: [
+        { name: "shared", path: firstSkillFile },
+        { name: "shared_2", path: secondSkillFile },
+      ],
+      skillsSnapshot: {
+        prompt: "",
+        skills: [],
+        resolvedSkillCommands: [
+          {
+            selectionPath: firstSkillFile,
+            skillFile: firstSkillFile,
+            skillName: "shared",
+            skillSource: "workspace",
+          },
+          {
+            selectionPath: secondSkillFile,
+            skillFile: secondSkillFile,
+            skillName: "shared",
+            skillSource: "workspace",
+          },
+        ],
+      },
+    });
+
+    const firstUsageGuard = bindWorkspaceSkillUsage({
+      operationalRunInstance,
+      skillFile: firstSkillFile,
+    });
+    const secondUsageGuard = bindWorkspaceSkillUsage({
+      operationalRunInstance,
+      skillFile: secondSkillFile,
+    });
+    expect(firstUsageGuard?.()).toBe(true);
+    expect(secondUsageGuard?.()).toBe(true);
+
+    recordRunSkillUsage({
+      operationalRunInstance,
+      name: "shared",
+      source: "workspace",
+      activation: "command",
+      skillFile: firstSkillFile,
+    });
+    expect(firstUsageGuard?.()).toBe(true);
+    expect(secondUsageGuard?.()).toBe(true);
+    consumeRunSkillUsage(runId);
     discardRunWorkspaceSkillUsage(operationalRunInstance);
     releaseAgentRunDelegatedAuthority(authority);
   });
@@ -254,7 +308,6 @@ describe("explicit run skill usage", () => {
 
         const originalUsageGuard = bindWorkspaceSkillUsage({
           operationalRunInstance,
-          name: selectedName,
           skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
         });
         expect(originalUsageGuard?.()).toBe(true);
@@ -263,14 +316,12 @@ describe("explicit run skill usage", () => {
         expect(
           hasRunWorkspaceSkillUsage({
             operationalRunInstance,
-            name: selectedName,
             skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
           }),
         ).toBe(false);
         expect(
           hasRunWorkspaceSkillUsage({
             operationalRunInstance: replacementRunInstance,
-            name: selectedName,
             skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
           }),
         ).toBe(false);
@@ -306,7 +357,6 @@ describe("explicit run skill usage", () => {
         });
         const replacementUsageGuard = bindWorkspaceSkillUsage({
           operationalRunInstance: replacementRunInstance,
-          name: selectedName,
           skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
         });
         expect(replacementUsageGuard?.()).toBe(true);

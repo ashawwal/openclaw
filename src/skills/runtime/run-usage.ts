@@ -62,14 +62,15 @@ export function recordRunSkillUsage(
     return;
   }
   const authorityUsage = workspaceSkillUsageByAuthority.get(delegatedAuthority) ?? new Map();
-  authorityUsage.set(runSkillUsageKey(record), record);
+  if (!authorityUsage.has(record.skillFile)) {
+    authorityUsage.set(record.skillFile, record);
+  }
   workspaceSkillUsageByAuthority.set(delegatedAuthority, authorityUsage);
 }
 
 /** Binds one used workspace skill to the exact delegated authority that admitted it. */
 export function bindWorkspaceSkillUsage(params: {
   operationalRunInstance: RunSkillUsageInstance | undefined;
-  name: string;
   skillFile: string;
 }): (() => boolean) | undefined {
   const operationalRunInstance = params.operationalRunInstance;
@@ -79,20 +80,15 @@ export function bindWorkspaceSkillUsage(params: {
   if (!delegatedAuthority) {
     return undefined;
   }
-  for (const usage of workspaceSkillUsageByAuthority.get(delegatedAuthority)?.values() ?? []) {
-    if (
-      usage.source === "workspace" &&
-      (usage.skillFile === params.skillFile || (!usage.skillFile && usage.name === params.name))
-    ) {
-      return () =>
-        getActiveAgentRunDelegatedAuthority(delegatedAuthority.operationalRunInstance) ===
-          delegatedAuthority &&
-        validateAgentRunDelegatedAuthority(delegatedAuthority) &&
-        workspaceSkillUsageByAuthority.get(delegatedAuthority)?.get(runSkillUsageKey(usage)) ===
-          usage;
-    }
+  const usage = workspaceSkillUsageByAuthority.get(delegatedAuthority)?.get(params.skillFile);
+  if (!usage) {
+    return undefined;
   }
-  return undefined;
+  return () =>
+    getActiveAgentRunDelegatedAuthority(delegatedAuthority.operationalRunInstance) ===
+      delegatedAuthority &&
+    validateAgentRunDelegatedAuthority(delegatedAuthority) &&
+    workspaceSkillUsageByAuthority.get(delegatedAuthority)?.get(params.skillFile) === usage;
 }
 
 /** Transfers one completed run's usage receipt to its terminal side effects. */

@@ -189,7 +189,6 @@ function assertSkillPatchRunUsage(params: {
   const isAuthorized = params.foregroundRepair
     ? bindWorkspaceSkillUsage({
         operationalRunInstance: params.operationalRunInstance,
-        name: params.skill.skillKey,
         skillFile: params.skill.skillFile,
       })
     : undefined;

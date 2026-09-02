@@ -251,21 +251,18 @@ describe("embedded run retry dispatch", () => {
       expect(
         hasRunWorkspaceSkillUsage({
           operationalRunInstance,
-          name: "release",
           skillFile,
         }),
       ).toBe(true);
       expect(
         hasRunWorkspaceSkillUsage({
           operationalRunInstance,
-          name: "lint",
           skillFile: bundledSkillFile,
         }),
       ).toBe(false);
       expect(
         hasRunWorkspaceSkillUsage({
           operationalRunInstance,
-          name: "unmatched",
           skillFile: "/tmp/workspace/skills/unmatched/SKILL.md",
         }),
       ).toBe(false);

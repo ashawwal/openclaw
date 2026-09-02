@@ -90,7 +90,6 @@ describe("explicit skill selection lifetime", () => {
       expect(
         hasRunWorkspaceSkillUsage({
           operationalRunInstance: failedRunInstance,
-          name: skillName,
           skillFile,
         }),
       ).toBe(true);
@@ -113,7 +112,6 @@ describe("explicit skill selection lifetime", () => {
     expect(
       hasRunWorkspaceSkillUsage({
         operationalRunInstance: failedRunInstance,
-        name: skillName,
         skillFile,
       }),
     ).toBe(false);
@@ -138,7 +136,6 @@ describe("explicit skill selection lifetime", () => {
       expect(
         hasRunWorkspaceSkillUsage({
           operationalRunInstance: replacementRunInstance,
-          name: skillName,
           skillFile,
         }),
       ).toBe(false);

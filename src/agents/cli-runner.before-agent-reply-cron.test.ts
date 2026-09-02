@@ -232,10 +232,8 @@ describe("runCliAgent before_agent_reply seam", () => {
     let operationalRunInstance: OperationalRunInstanceRef | undefined;
     executePreparedCliRunMock.mockImplementationOnce(async (context) => {
       operationalRunInstance = readStubRunInstance(context);
-      expect(hasStubSkillReceipt(operationalRunInstance, "selected", selectedSkillFile)).toBe(true);
-      expect(hasStubSkillReceipt(operationalRunInstance, "unselected", unselectedSkillFile)).toBe(
-        false,
-      );
+      expect(hasStubSkillReceipt(operationalRunInstance, selectedSkillFile)).toBe(true);
+      expect(hasStubSkillReceipt(operationalRunInstance, unselectedSkillFile)).toBe(false);
       return { text: "done" };
     });
 
@@ -246,7 +244,7 @@ describe("runCliAgent before_agent_reply seam", () => {
       explicitSkillSelections: [{ name: "selected", path: selectedSkillFile }],
     });
 
-    expect(hasStubSkillReceipt(operationalRunInstance, "selected", selectedSkillFile)).toBe(false);
+    expect(hasStubSkillReceipt(operationalRunInstance, selectedSkillFile)).toBe(false);
   });
 
   it("revokes a failed CLI receipt before the same run ID is reused without a selection", async () => {
@@ -254,7 +252,7 @@ describe("runCliAgent before_agent_reply seam", () => {
     let failedRunInstance: OperationalRunInstanceRef | undefined;
     executePreparedCliRunMock.mockImplementationOnce(async (context) => {
       failedRunInstance = readStubRunInstance(context);
-      expect(hasStubSkillReceipt(failedRunInstance, "selected", selectedSkillFile)).toBe(true);
+      expect(hasStubSkillReceipt(failedRunInstance, selectedSkillFile)).toBe(true);
       throw new Error("backend failed after receipt");
     });
 
@@ -266,11 +264,11 @@ describe("runCliAgent before_agent_reply seam", () => {
         explicitSkillSelections: [{ name: "selected", path: selectedSkillFile }],
       }),
     ).rejects.toThrow("backend failed after receipt");
-    expect(hasStubSkillReceipt(failedRunInstance, "selected", selectedSkillFile)).toBe(false);
+    expect(hasStubSkillReceipt(failedRunInstance, selectedSkillFile)).toBe(false);
 
     executePreparedCliRunMock.mockImplementationOnce(async (context) => {
       const replacementInstance = readStubRunInstance(context);
-      expect(hasStubSkillReceipt(replacementInstance, "selected", selectedSkillFile)).toBe(false);
+      expect(hasStubSkillReceipt(replacementInstance, selectedSkillFile)).toBe(false);
       return { text: "unselected run" };
     });
     await runCliAgent({ ...baseRunParams, runId, skillsSnapshot });

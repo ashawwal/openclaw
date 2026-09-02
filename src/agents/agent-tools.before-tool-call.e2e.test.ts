@@ -1614,7 +1614,6 @@ describe("before_tool_call loop detection behavior", () => {
       expect(
         hasRunWorkspaceSkillUsage({
           operationalRunInstance,
-          name: "demo-skill",
           skillFile: skillFilePath,
         }),
       ).toBe(true);

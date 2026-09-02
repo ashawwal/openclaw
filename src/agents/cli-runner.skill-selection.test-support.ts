@@ -33,8 +33,7 @@ export function readStubRunInstance(context: unknown): OperationalRunInstanceRef
 
 export function hasStubSkillReceipt(
   operationalRunInstance: OperationalRunInstanceRef | undefined,
-  name: string,
   skillFile: string,
 ): boolean {
-  return bindWorkspaceSkillUsage({ operationalRunInstance, name, skillFile })?.() === true;
+  return bindWorkspaceSkillUsage({ operationalRunInstance, skillFile })?.() === true;
 }
