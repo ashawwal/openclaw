@@ -1,5 +1,6 @@
 import {
   getActiveAgentRunDelegatedAuthority,
+  validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
@@ -65,28 +66,33 @@ export function recordRunSkillUsage(
   workspaceSkillUsageByAuthority.set(delegatedAuthority, authorityUsage);
 }
 
-/** Checks exact, still-live admitted authority for one used writable workspace skill. */
-export function hasRunWorkspaceSkillUsage(params: {
+/** Binds one used workspace skill to the exact delegated authority that admitted it. */
+export function bindWorkspaceSkillUsage(params: {
   operationalRunInstance: RunSkillUsageInstance | undefined;
   name: string;
   skillFile: string;
-}): boolean {
+}): (() => boolean) | undefined {
   const operationalRunInstance = params.operationalRunInstance;
   const delegatedAuthority = operationalRunInstance
     ? getActiveAgentRunDelegatedAuthority(operationalRunInstance)
     : undefined;
   if (!delegatedAuthority) {
-    return false;
+    return undefined;
   }
   for (const usage of workspaceSkillUsageByAuthority.get(delegatedAuthority)?.values() ?? []) {
     if (
       usage.source === "workspace" &&
       (usage.skillFile === params.skillFile || (!usage.skillFile && usage.name === params.name))
     ) {
-      return true;
+      return () =>
+        getActiveAgentRunDelegatedAuthority(delegatedAuthority.operationalRunInstance) ===
+          delegatedAuthority &&
+        validateAgentRunDelegatedAuthority(delegatedAuthority) &&
+        workspaceSkillUsageByAuthority.get(delegatedAuthority)?.get(runSkillUsageKey(usage)) ===
+          usage;
     }
   }
-  return false;
+  return undefined;
 }
 
 /** Transfers one completed run's usage receipt to its terminal side effects. */

@@ -1,7 +1,7 @@
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { sha256Hex } from "../../infra/crypto-digest.js";
-import { hasRunWorkspaceSkillUsage } from "../../skills/runtime/run-usage.js";
+import { bindWorkspaceSkillUsage } from "../../skills/runtime/run-usage.js";
 import { stripProposalFrontmatterForSkill } from "../../skills/workshop/frontmatter.js";
 import { composeSkillBodyPatch, findUniqueSkillPatchSpan } from "../../skills/workshop/service.js";
 import type { SkillWorkshopPreparedPatch } from "../../skills/workshop/types.js";
@@ -186,15 +186,15 @@ function assertSkillPatchRunUsage(params: {
   foregroundRepair: boolean;
   operationalRunInstance?: OperationalRunInstanceRef;
 }): () => void {
-  const assertAuthorized = () => {
-    if (
-      params.foregroundRepair &&
-      !hasRunWorkspaceSkillUsage({
+  const isAuthorized = params.foregroundRepair
+    ? bindWorkspaceSkillUsage({
         operationalRunInstance: params.operationalRunInstance,
         name: params.skill.skillKey,
         skillFile: params.skill.skillFile,
       })
-    ) {
+    : undefined;
+  const assertAuthorized = () => {
+    if (params.foregroundRepair && isAuthorized?.() !== true) {
       throw new ToolInputError(
         `skill "${params.skill.skillKey}" was not used in this run and cannot be repaired autonomously`,
       );

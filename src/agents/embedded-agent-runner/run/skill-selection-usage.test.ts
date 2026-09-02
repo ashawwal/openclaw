@@ -9,9 +9,10 @@ import { buildWorkspaceSkillCommandSpecs } from "../../../skills/discovery/comma
 import { loadWorkspaceSkills } from "../../../skills/loading/workspace-skill-loader.js";
 import { buildSkillSnapshot } from "../../../skills/loading/workspace-skill-prompt.js";
 import {
+  bindWorkspaceSkillUsage,
   consumeRunSkillUsage,
   discardRunWorkspaceSkillUsage,
-  hasRunWorkspaceSkillUsage,
+  recordRunSkillUsage,
 } from "../../../skills/runtime/run-usage.js";
 import { writeSkill } from "../../../skills/test-support/e2e-test-helpers.js";
 import { applySkillProposal, proposeCreateSkill } from "../../../skills/workshop/service.js";
@@ -32,6 +33,10 @@ function bindWorkshopToolToRun(
     sessionKey: "explicit-skill-selection-test",
     operationalRunInstance,
   });
+}
+
+function hasRunWorkspaceSkillUsage(params: Parameters<typeof bindWorkspaceSkillUsage>[0]): boolean {
+  return bindWorkspaceSkillUsage(params)?.() === true;
 }
 
 describe("explicit run skill usage", () => {
@@ -247,6 +252,12 @@ describe("explicit run skill usage", () => {
           }),
         ).resolves.toMatchObject({ details: { status: "applied" } });
 
+        const originalUsageGuard = bindWorkspaceSkillUsage({
+          operationalRunInstance,
+          name: selectedName,
+          skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
+        });
+        expect(originalUsageGuard?.()).toBe(true);
         const replacementRunInstance = createOperationalRunInstanceRef(runId);
         const replacementAuthority = claimAgentRunDelegatedAuthority(replacementRunInstance);
         expect(
@@ -286,6 +297,20 @@ describe("explicit run skill usage", () => {
             new_string: "Keep BORROWED_SELECTED guidance.",
           }),
         ).rejects.toThrow(`skill "${selectedName}" was not used in this run`);
+        recordRunSkillUsage({
+          operationalRunInstance: replacementRunInstance,
+          name: selectedName,
+          source: "workspace",
+          activation: "command",
+          skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
+        });
+        const replacementUsageGuard = bindWorkspaceSkillUsage({
+          operationalRunInstance: replacementRunInstance,
+          name: selectedName,
+          skillFile: path.join(workspaceDir, "skills", selectedName, "SKILL.md"),
+        });
+        expect(replacementUsageGuard?.()).toBe(true);
+        expect(originalUsageGuard?.()).toBe(false);
 
         await tool.execute("prepare-unselected", {
           action: "prepare_patch",

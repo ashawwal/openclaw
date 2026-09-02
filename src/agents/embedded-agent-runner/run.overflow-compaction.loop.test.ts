@@ -7,9 +7,9 @@ import {
   releaseAgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
 import {
+  bindWorkspaceSkillUsage,
   consumeRunSkillUsage,
   discardRunWorkspaceSkillUsage,
-  hasRunWorkspaceSkillUsage,
 } from "../../skills/runtime/run-usage.js";
 import {
   prepareSystemAgentRunAdmission,
@@ -29,6 +29,10 @@ const mocks = vi.hoisted(() => ({
   runAttempt: vi.fn(),
   settleRequesterAfterSessionSpawns: vi.fn(),
 }));
+
+function hasRunWorkspaceSkillUsage(params: Parameters<typeof bindWorkspaceSkillUsage>[0]): boolean {
+  return bindWorkspaceSkillUsage(params)?.() === true;
+}
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 vi.mock("../delegation-capability.js", () => ({
@@ -210,11 +214,11 @@ describe("embedded run retry dispatch", () => {
       const skillFile = "/tmp/workspace/skills/release/SKILL.md";
       const bundledSkillFile = "/tmp/bundled/skills/lint/SKILL.md";
       const input = makeDispatchInput({}, createEmbeddedRunReplayState());
-      const admittedRunContext = input.params.admittedRunContext;
-      if (!admittedRunContext) {
+      const runAdmission = input.params.admittedRunContext;
+      if (!runAdmission) {
         throw new Error("expected admitted run context");
       }
-      const operationalRunInstance = admittedRunContext.operationalRunInstance;
+      const operationalRunInstance = runAdmission.operationalRunInstance;
       const authority = claimAgentRunDelegatedAuthority(operationalRunInstance);
       input.runtime.agentHarnessId = agentHarnessId;
       input.params.explicitSkillSelections = [

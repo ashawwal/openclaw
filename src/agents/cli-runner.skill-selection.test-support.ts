@@ -1,4 +1,4 @@
-import { hasRunWorkspaceSkillUsage } from "../skills/runtime/run-usage.js";
+import { bindWorkspaceSkillUsage } from "../skills/runtime/run-usage.js";
 import type { OperationalRunInstanceRef } from "./admitted-run-context.js";
 
 export type StubPreparedContext = {
@@ -36,5 +36,5 @@ export function hasStubSkillReceipt(
   name: string,
   skillFile: string,
 ): boolean {
-  return hasRunWorkspaceSkillUsage({ operationalRunInstance, name, skillFile });
+  return bindWorkspaceSkillUsage({ operationalRunInstance, name, skillFile })?.() === true;
 }

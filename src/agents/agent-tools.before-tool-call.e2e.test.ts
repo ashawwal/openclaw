@@ -47,9 +47,9 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { setPluginToolMeta } from "../plugins/tool-metadata.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
+  bindWorkspaceSkillUsage,
   consumeRunSkillUsage,
   discardRunWorkspaceSkillUsage,
-  hasRunWorkspaceSkillUsage,
 } from "../skills/runtime/run-usage.js";
 import { createCanonicalFixtureSkill } from "../skills/test-support/test-helpers.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
@@ -63,6 +63,10 @@ import {
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import { createExecTool } from "./bash-tools.exec-run.js";
 import { createWriteTool } from "./sessions/index.js";
+
+function hasRunWorkspaceSkillUsage(params: Parameters<typeof bindWorkspaceSkillUsage>[0]): boolean {
+  return bindWorkspaceSkillUsage(params)?.() === true;
+}
 import type { AnyAgentTool } from "./tools/common.js";
 import { wrapToolWithGatewayCallerIdentity } from "./tools/gateway-caller-context.js";
 import { callGatewayTool } from "./tools/gateway.js";

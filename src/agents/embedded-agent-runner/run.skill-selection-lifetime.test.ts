@@ -16,16 +16,20 @@ import {
 } from "./run.overflow-compaction.harness.js";
 
 let runHarness: Awaited<ReturnType<typeof loadRunOverflowCompactionHarness>>;
-let hasRunWorkspaceSkillUsage: typeof import("../../skills/runtime/run-usage.js").hasRunWorkspaceSkillUsage;
+let bindWorkspaceSkillUsage: typeof import("../../skills/runtime/run-usage.js").bindWorkspaceSkillUsage;
 let createSkillWorkshopTool: typeof import("../tools/skill-workshop-tool.js").createSkillWorkshopTool;
 let getAgentRunContext: typeof import("../../infra/agent-run-registry.js").getAgentRunContext;
 
 beforeAll(async () => {
   runHarness = await loadRunOverflowCompactionHarness();
-  ({ hasRunWorkspaceSkillUsage } = await import("../../skills/runtime/run-usage.js"));
+  ({ bindWorkspaceSkillUsage } = await import("../../skills/runtime/run-usage.js"));
   ({ createSkillWorkshopTool } = await import("../tools/skill-workshop-tool.js"));
   ({ getAgentRunContext } = await import("../../infra/agent-run-registry.js"));
 });
+
+function hasRunWorkspaceSkillUsage(params: Parameters<typeof bindWorkspaceSkillUsage>[0]): boolean {
+  return bindWorkspaceSkillUsage(params)?.() === true;
+}
 
 describe("explicit skill selection lifetime", () => {
   let state: OpenClawTestState;
