@@ -10,11 +10,7 @@ import type { OperationalRunInstanceRef } from "../admitted-run-context.js";
 import { readToolStringParam, ToolInputError, type AnyAgentTool } from "./common.js";
 import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 
-type WritableSkillPatchTarget = {
-  skillKey: string;
-  skillFile: string;
-  content: string;
-};
+type WritableSkillPatchTarget = Awaited<ReturnType<typeof readWritableWorkspaceSkill>>;
 
 const PATCH_CONTEXT_PREFIX = [
   "Prepared patch context. This is a bounded excerpt, not the complete skill.",
@@ -50,7 +46,7 @@ function prepareSkillPatch(params: {
   const targetLabel = "--- authorized old_string ---";
   const afterLabel = "--- bounded context after target ---";
   const fixedText = [
-    `Skill: ${params.skill.skillKey} (${sizeBytes} bytes)`,
+    `Skill: ${params.skill.skillName} (${sizeBytes} bytes)`,
     PATCH_CONTEXT_PREFIX,
     beforeLabel,
     targetLabel,
@@ -68,7 +64,7 @@ function prepareSkillPatch(params: {
   const before = sliceUtf16Safe(body, Math.max(0, span.start - beforeBudget), span.start);
   const after = sliceUtf16Safe(body, span.end, span.end + afterBudget);
   const text = [
-    `Skill: ${params.skill.skillKey} (${sizeBytes} bytes)`,
+    `Skill: ${params.skill.skillName} (${sizeBytes} bytes)`,
     PATCH_CONTEXT_PREFIX,
     beforeLabel,
     before,
@@ -113,7 +109,7 @@ export async function executePrepareSkillPatch(params: {
   );
   if (params.preparedSkillPatches.has(skill.skillKey)) {
     throw new ToolInputError(
-      `skill "${skill.skillKey}" already has a prepared patch: call action=patch to redeem or invalidate it before preparing another exact span`,
+      `skill "${skill.skillName}" already has a prepared patch: call action=patch to redeem or invalidate it before preparing another exact span`,
     );
   }
   try {
@@ -131,6 +127,7 @@ export async function executePrepareSkillPatch(params: {
     return {
       content: [{ type: "text", text: prepared.text }],
       details: {
+        skillName: skill.skillName,
         skillKey: skill.skillKey,
         sizeBytes: prepared.sizeBytes,
         patchPrepared: true,
@@ -157,7 +154,7 @@ function redeemPreparedSkillPatch(params: {
     prepared.contentHash !== sha256Hex(params.skill.content)
   ) {
     throw new ToolInputError(
-      `skill "${params.skill.skillKey}" changed since the patch was prepared: call action=prepare_patch again with the current exact old_string`,
+      `skill "${params.skill.skillName}" changed since the patch was prepared: call action=prepare_patch again with the current exact old_string`,
     );
   }
   if (prepared.oldString !== params.oldString) {
@@ -195,7 +192,7 @@ function assertSkillPatchRunUsage(params: {
   const assertAuthorized = () => {
     if (params.foregroundRepair && isAuthorized?.() !== true) {
       throw new ToolInputError(
-        `skill "${params.skill.skillKey}" was not used in this run and cannot be repaired autonomously`,
+        `skill "${params.skill.skillName}" was not used in this run and cannot be repaired autonomously`,
       );
     }
   };
