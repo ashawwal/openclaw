@@ -1083,6 +1083,7 @@ describe("CLI attempt execution", () => {
       cfg,
       body: opts.message,
       transcriptBody: opts.message,
+      explicitSkillSelections: undefined,
       configuredThinkingCatalog: [],
       normalizedSpawned: {},
       agentCfg: undefined,

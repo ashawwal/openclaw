@@ -3126,7 +3126,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       internalDeliveryMediaUrls: ["/tmp/payload.png"],
       inputProvenance: {
         kind: "inter_session",
-        sourceChannel: "webchat",
+        sourceChannel: "internal",
         sourceTool: "image_generate",
       },
     });
@@ -3188,7 +3188,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       sourceReplyDeliveryMode: "message_tool_only",
       inputProvenance: {
         kind: "inter_session",
-        sourceChannel: "webchat",
+        sourceChannel: "internal",
         sourceTool: "image_generate",
       },
     });
@@ -3220,7 +3220,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       runId: "image:task-policy:agent-loop",
       inputProvenance: {
         kind: "inter_session",
-        sourceChannel: "webchat",
+        sourceChannel: "internal",
         sourceTool: "image_generate",
       },
     });
