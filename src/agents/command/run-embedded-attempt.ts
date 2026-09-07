@@ -65,7 +65,6 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
     cfg,
     body,
     transcriptBody,
-    explicitSkillSelections,
     sessionId,
     sessionKey,
     sessionStore,
@@ -481,7 +480,7 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
               cwd,
               body,
               transcriptBody,
-              explicitSkillSelections,
+              explicitSkillSelections: params.prepared.explicitSkillSelections,
               isFallbackRetry: runOptions.isFallbackRetry,
               classifyResult: runOptions.classifyResult,
               preserveCliSessionBinding:
