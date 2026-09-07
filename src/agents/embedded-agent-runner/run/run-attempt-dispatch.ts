@@ -22,6 +22,7 @@ import { buildAgentRuntimePlan } from "../../runtime-plan/build.js";
 import { resolveSessionPermissionExecMode } from "../../session-permission-exec-mode.js";
 import { resolveSessionPlacementSandbox } from "../../session-placement-admission.js";
 import { resolveSessionSkillResourceSnapshot } from "../../session-placement-skill-resources.js";
+import { recordExplicitSkillSelectionsForRun } from "../../skill-selection-usage.js";
 import { createToolTerminalObserver } from "../../tool-terminal-outcome.js";
 import {
   resolveAttemptWorkspaceSandbox,
@@ -687,7 +688,14 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
   const rawAttempt = await withPreparedEmbeddedGatewayTools(
     attemptParams,
     attemptControls.isCurrent,
-    () => runEmbeddedAttemptWithBackend(attemptParams, nativeSessionRuntime, params.media),
+    () => {
+      recordExplicitSkillSelectionsForRun({
+        operationalRunInstance: attemptParams.admittedRunContext.operationalRunInstance,
+        selections: params.explicitSkillSelections,
+        skillsSnapshot: params.skillsSnapshot,
+      });
+      return runEmbeddedAttemptWithBackend(attemptParams, nativeSessionRuntime, params.media);
+    },
   )
     .catch((err: unknown): never => {
       throw input.getPostCompactionAbortError() ?? err;

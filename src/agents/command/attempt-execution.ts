@@ -40,7 +40,7 @@ import { isSubagentSessionKey } from "../../routing/session-key.js";
 import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
-import type { SkillSnapshot } from "../../skills/types.js";
+import type { ExplicitSkillSelection, SkillSnapshot } from "../../skills/types.js";
 import {
   getGeneratedMediaTaskIdsForSessionKey,
   hasNewGeneratedMediaTaskForSessionKey,
@@ -259,6 +259,7 @@ export function runAgentAttempt(params: {
   cwd?: string;
   body: string;
   transcriptBody?: string;
+  explicitSkillSelections?: ExplicitSkillSelection[];
   isFallbackRetry: boolean;
   preserveCliSessionBinding?: boolean;
   classifyResult?: (result: EmbeddedAgentRunResult) => ModelFallbackResultClassification;
@@ -857,6 +858,9 @@ export function runAgentAttempt(params: {
             // accompany every CLI process. Native dedupe requires a runtime receipt.
             images: params.opts.images,
             imageOrder: params.opts.imageOrder,
+            media: params.opts.media,
+            skillsSnapshot: params.skillsSnapshot,
+            explicitSkillSelections: params.explicitSkillSelections,
             ...toolContext,
             // Completion relays can carry the trusted source only in their
             // delivery target; the restricted CLI grant must retain that owner.
@@ -1034,6 +1038,7 @@ export function runAgentAttempt(params: {
       agentHarnessPolicy.runtimeSource !== "implicit" ? agentHarnessPolicy.runtime : undefined,
     prompt: effectivePrompt,
     transcriptPrompt: continuationTranscriptBody,
+    explicitSkillSelections: params.explicitSkillSelections,
     // CLI retries cannot replay a persisted turn after orphan-user repair removes it.
     images: shouldForwardImagesToEmbedded ? params.opts.images : undefined,
     imageOrder: shouldForwardImagesToEmbedded ? params.opts.imageOrder : undefined,

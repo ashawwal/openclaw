@@ -84,6 +84,7 @@ import {
   runAgentHarnessLlmOutputHook,
 } from "./harness/lifecycle-hook-helpers.js";
 import { resolveReplyExpectation } from "./reply-completion.js";
+import { recordExplicitSkillSelectionsForRun } from "./skill-selection-usage.js";
 
 const log = createSubsystemLogger("agents/cli-runner");
 const cliRunnerDeps = cliRunSettlementDeps;
@@ -239,6 +240,11 @@ async function runCliAgentInternal(
     await settleCliPreparationError(error, params);
     throw error;
   }
+  recordExplicitSkillSelectionsForRun({
+    operationalRunInstance: context.params.admittedRunContext.operationalRunInstance,
+    selections: context.params.explicitSkillSelections,
+    skillsSnapshot: context.params.skillsSnapshot,
+  });
   return await settlePreparedCliRun({
     context,
     diagnosticLifecycle,
