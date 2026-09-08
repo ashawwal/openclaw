@@ -1,4 +1,10 @@
 // WhatsApp monitor inbox behavior split by ownership.
+import {
+  generateWAMessage,
+  type AnyMessageContent,
+  type MiscMessageGenerationOptions,
+  type WAMessage,
+} from "baileys";
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { defaultRuntime } from "openclaw/plugin-sdk/runtime-env";
 import { describe, expect, it, vi } from "vitest";
@@ -225,7 +231,7 @@ describe("web monitor inbox socket lifecycle", () => {
     await listener.close();
   });
 
-  it("socket session reuses one message id across retries without colliding with later sends", async () => {
+  it("propagates stable Baileys identity through an ambiguous transport retry", async () => {
     const onMessage = vi.fn(async () => undefined);
     const socketRef = createSocketRef();
     const { listener, sock, inbound } = await primeInboundReplyHandle({
@@ -235,19 +241,66 @@ describe("web monitor inbox socket lifecycle", () => {
       retryPolicy: fastReconnectPolicy(2),
     });
 
-    sock.sendMessage.mockRejectedValueOnce(new Error("operation timed out"));
+    const transportAttempts: WAMessage[] = [];
+    const sendThroughBaileys = async (
+      jid: string,
+      content: AnyMessageContent,
+      sendOptions?: MiscMessageGenerationOptions,
+    ) => {
+      // Exercise Baileys' production message construction, where messageId becomes
+      // the generated message key later supplied to relayMessage.
+      const generated = await generateWAMessage(jid, content, {
+        ...sendOptions,
+        userJid: sock.user.id,
+        upload: async () => {
+          throw new Error("unexpected media upload");
+        },
+      });
+      const messageId = generated.key.id;
+      if (!messageId) {
+        throw new Error("Baileys generated a message without an id");
+      }
+      transportAttempts.push(generated);
+      return generated;
+    };
 
-    await inbound?.platform.reply("pong");
-    await inbound?.platform.reply("next");
+    // The first transport accepts the message, then loses the connection before
+    // OpenClaw can observe success. The retry therefore crosses to a new socket.
+    sock.sendMessage.mockImplementationOnce(
+      async (
+        jid: string,
+        content: AnyMessageContent,
+        sendOptions?: MiscMessageGenerationOptions,
+      ) => {
+        await sendThroughBaileys(jid, content, sendOptions);
+        throw new Error("connection closed after relay acceptance");
+      },
+    );
+    const replacementSendMessage = vi.fn(sendThroughBaileys);
+    const replacementSock = { ...sock, sendMessage: replacementSendMessage };
+    sleepWithAbortMock.mockImplementationOnce(async () => {
+      expect(socketRef.current).toBeNull();
+      socketRef.current = replacementSock as unknown as typeof socketRef.current;
+    });
 
-    const firstMessageId = sock.sendMessage.mock.calls[0]?.[2]?.messageId;
-    const retryMessageId = sock.sendMessage.mock.calls[1]?.[2]?.messageId;
-    const nextLogicalMessageId = sock.sendMessage.mock.calls[2]?.[2]?.messageId;
+    const recoveredSend = await inbound?.platform.reply("pong");
+    const nextSend = await inbound?.platform.reply("next");
+
+    const [firstMessageId, retryMessageId, nextLogicalMessageId] = transportAttempts.map(
+      (message) => message.key.id,
+    );
     expect(firstMessageId).toMatch(WHATSAPP_MESSAGE_ID_PATTERN);
     expect(retryMessageId).toBe(firstMessageId);
     expect(nextLogicalMessageId).toMatch(WHATSAPP_MESSAGE_ID_PATTERN);
     expect(nextLogicalMessageId).not.toBe(firstMessageId);
-    expect(socketRef.current).toBe(sock);
+    expect(new Set([firstMessageId, retryMessageId, nextLogicalMessageId]).size).toBe(2);
+    expect(recoveredSend?.messageId).toBe(firstMessageId);
+    expect(nextSend?.messageId).toBe(nextLogicalMessageId);
+    expect(
+      transportAttempts.map((message) => message.message?.extendedTextMessage?.text?.toString()),
+    ).toEqual(["pong", "pong", "next"]);
+    expect(replacementSendMessage).toHaveBeenCalledTimes(2);
+    expect(socketRef.current).toBe(replacementSock);
     expect(sleepWithAbortMock).toHaveBeenCalledTimes(1);
 
     await listener.close();
