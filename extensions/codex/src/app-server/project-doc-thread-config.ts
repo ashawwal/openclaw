@@ -1,11 +1,11 @@
 import { mergeCodexThreadConfigs } from "./plugin-thread-config.js";
-import type { JsonObject } from "./protocol.js";
+import type { CodexConfigReadResponse, JsonObject } from "./protocol.js";
 
 const CODEX_NATIVE_PROJECT_DOC_MAX_BYTES = 128 * 1024;
 
 export function buildCodexProjectDocThreadConfig(
   config?: JsonObject,
-  effectiveNativeConfig?: JsonObject,
+  effectiveNativeConfig?: CodexConfigReadResponse,
 ): JsonObject {
   const authoredMaxBytes = resolveCodexNativeProjectDocMaxBytes(effectiveNativeConfig);
   const defaults: JsonObject = {
@@ -15,14 +15,19 @@ export function buildCodexProjectDocThreadConfig(
 }
 
 function resolveCodexNativeProjectDocMaxBytes(
-  effectiveNativeConfig?: JsonObject,
+  effectiveNativeConfig?: CodexConfigReadResponse,
 ): number | undefined {
-  const authoredMaxBytes = effectiveNativeConfig?.project_doc_max_bytes;
+  // config/read materializes Codex's built-in 32 KiB default in `config`, but
+  // deliberately omits packaged defaults from `origins`. Only an origin proves
+  // that an operator or administrator actually authored this setting.
+  if (effectiveNativeConfig?.origins?.project_doc_max_bytes === undefined) {
+    return undefined;
+  }
+  const authoredMaxBytes = effectiveNativeConfig.config.project_doc_max_bytes;
   if (
-    authoredMaxBytes !== undefined &&
-    (typeof authoredMaxBytes !== "number" ||
-      !Number.isSafeInteger(authoredMaxBytes) ||
-      authoredMaxBytes < 0)
+    typeof authoredMaxBytes !== "number" ||
+    !Number.isSafeInteger(authoredMaxBytes) ||
+    authoredMaxBytes < 0
   ) {
     throw new Error("Codex config/read returned an invalid project_doc_max_bytes value");
   }
@@ -31,7 +36,7 @@ function resolveCodexNativeProjectDocMaxBytes(
 
 export function mergeCodexNativeProjectDocThreadConfig(
   config: JsonObject | undefined,
-  effectiveNativeConfig: JsonObject,
+  effectiveNativeConfig: CodexConfigReadResponse,
 ): JsonObject | undefined {
   const authoredMaxBytes = resolveCodexNativeProjectDocMaxBytes(effectiveNativeConfig);
   return authoredMaxBytes === undefined

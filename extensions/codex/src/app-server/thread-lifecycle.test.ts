@@ -2182,16 +2182,33 @@ describe("Codex app-server native code mode config", () => {
     });
   });
 
-  it("prefers request project-document budgets over effective native config", () => {
-    expect(buildCodexProjectDocThreadConfig(undefined, { project_doc_max_bytes: 200_000 })).toEqual(
-      { project_doc_max_bytes: 200_000 },
-    );
+  it("prefers request project-document budgets over authored native config", () => {
+    const effectiveNativeConfig = {
+      config: { project_doc_max_bytes: 200_000 },
+      origins: {
+        project_doc_max_bytes: {
+          name: { type: "user" as const, file: "/codex/config.toml", profile: null },
+          version: "sha256:authored-budget",
+        },
+      },
+      layers: [],
+    };
+    expect(buildCodexProjectDocThreadConfig(undefined, effectiveNativeConfig)).toEqual({
+      project_doc_max_bytes: 200_000,
+    });
     expect(
-      buildCodexProjectDocThreadConfig(
-        { project_doc_max_bytes: 64_000 },
-        { project_doc_max_bytes: 200_000 },
-      ),
+      buildCodexProjectDocThreadConfig({ project_doc_max_bytes: 64_000 }, effectiveNativeConfig),
     ).toEqual({ project_doc_max_bytes: 64_000 });
+  });
+
+  it("preserves the OpenClaw default for Codex's materialized unauthored default", () => {
+    expect(
+      buildCodexProjectDocThreadConfig(undefined, {
+        config: { project_doc_max_bytes: 32_768 },
+        origins: {},
+        layers: [],
+      }),
+    ).toEqual({ project_doc_max_bytes: 131_072 });
   });
 });
 

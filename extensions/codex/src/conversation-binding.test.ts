@@ -822,7 +822,12 @@ describe("codex conversation binding", () => {
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     configLayerPolicyMocks.readCodexEffectiveConfig.mockResolvedValue({
       config: { project_doc_max_bytes: 200_000 },
-      origins: {},
+      origins: {
+        project_doc_max_bytes: {
+          name: { type: "user", file: "/codex/config.toml", profile: null },
+          version: "sha256:authored-budget",
+        },
+      },
       layers: [],
     });
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
@@ -1223,6 +1228,11 @@ describe("codex conversation binding", () => {
   it.each([undefined, null, true])(
     "reconfigures a retained interactive or unknown-capability thread (%s)",
     async (canAcceptDirectInput) => {
+      configLayerPolicyMocks.readCodexEffectiveConfig.mockResolvedValue({
+        config: { project_doc_max_bytes: 32_768 },
+        origins: {},
+        layers: [],
+      });
       const sessionFile = path.join(tempDir, "retained-child-session.jsonl");
       const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
       const client = {

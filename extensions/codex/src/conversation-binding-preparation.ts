@@ -42,6 +42,7 @@ import {
 import { buildCodexProjectDocThreadConfig } from "./app-server/project-doc-thread-config.js";
 import { assertCodexThreadAcceptsDirectInput } from "./app-server/protocol-validators.js";
 import type {
+  CodexConfigReadResponse,
   CodexServiceTier,
   CodexThreadResumeResponse,
   CodexThreadStartParams,
@@ -285,7 +286,7 @@ async function resolveThreadBindingRuntime(params: CodexThreadBindingParams) {
 function buildConversationThreadRequest(
   resolved: ConversationAppServerRuntime & { model?: string; modelProvider?: string },
   serviceTier?: CodexServiceTier | null,
-  effectiveNativeConfig?: JsonObject,
+  effectiveNativeConfig?: CodexConfigReadResponse,
 ): CodexThreadStartParams {
   return {
     cwd: resolved.workspaceDir,
@@ -318,13 +319,13 @@ export async function buildConversationThreadRequestForClient(
     requestOptions().signal,
   );
   requestOptions();
-  return buildConversationThreadRequest(resolved, serviceTier, effectiveConfig.config);
+  return buildConversationThreadRequest(resolved, serviceTier, effectiveConfig);
 }
 
 function codexConversationSandboxOrPermissions(
   runtime: Pick<ConversationAppServerRuntime["runtime"], "networkProxy">,
   sandbox: ConversationAppServerRuntime["runtime"]["sandbox"],
-  effectiveNativeConfig?: JsonObject,
+  effectiveNativeConfig?: CodexConfigReadResponse,
 ): {
   sandbox?: ConversationAppServerRuntime["runtime"]["sandbox"];
   config?: JsonObject;

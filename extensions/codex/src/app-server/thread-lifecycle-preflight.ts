@@ -154,7 +154,7 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
       readCodexEffectiveConfig(params.client, params.cwd, params.signal),
     );
   }
-  params.config = mergeCodexNativeProjectDocThreadConfig(params.config, effectiveConfig.config);
+  params.config = mergeCodexNativeProjectDocThreadConfig(params.config, effectiveConfig);
   const restrictedToolSurfaceInheritedMcpServerNames = restrictedToolSurface
     ? await lifecycleTiming.measure("restricted-tool-surface-mcp-policy", () =>
         readCodexInheritedMcpServerNames(params.client, params.cwd, params.signal, effectiveConfig),

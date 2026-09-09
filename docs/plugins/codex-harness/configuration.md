@@ -105,8 +105,9 @@ tool authority. Their isolated native environment cannot read workspace files,
 so OpenClaw supplies the bounded workspace `AGENTS.md` snapshot as thread-level
 developer instructions. An explicitly authored native
 `project_doc_max_bytes` setting overrides the 128 KiB fallback for ordinary
-threads. Lightweight, ring-zero, message-only, and tool-disabled internal turns
-set the native project-document budget to zero instead.
+threads; Codex's materialized 32 KiB default does not. Lightweight, ring-zero,
+message-only, and tool-disabled internal turns set the native project-document
+budget to zero instead.
 
 This byte budget is separate from the character-based workspace bootstrap
 limits configured through `agents.defaults.bootstrapMaxChars` and
