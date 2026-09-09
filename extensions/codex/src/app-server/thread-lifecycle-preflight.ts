@@ -151,7 +151,7 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
   }
   if (!effectiveConfig) {
     effectiveConfig = await lifecycleTiming.measure("effective-config-read", () =>
-      readCodexEffectiveConfig(params.client, params.cwd, params.signal),
+      readCodexEffectiveConfig(params.client, params.cwd, { signal: params.signal }),
     );
   }
   params.config = mergeCodexNativeProjectDocThreadConfig(params.config, effectiveConfig);

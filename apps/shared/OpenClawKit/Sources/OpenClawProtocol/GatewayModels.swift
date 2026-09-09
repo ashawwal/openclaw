@@ -8252,6 +8252,7 @@ public struct ActiveWorkerSessionPlacement: Codable, Sendable {
     public let lastliveeventackcursor: Int?
     public let workspaceresultconflict: [String: AnyCodable]?
     public let diskspace: SessionPlacementDiskSpace?
+    public let workspaceresultreconciling: Bool?
     public let runner: SessionPlacementRunner?
 
     public init(
@@ -8271,6 +8272,7 @@ public struct ActiveWorkerSessionPlacement: Codable, Sendable {
         lastliveeventackcursor: Int? = nil,
         workspaceresultconflict: [String: AnyCodable]? = nil,
         diskspace: SessionPlacementDiskSpace? = nil,
+        workspaceresultreconciling: Bool? = nil,
         runner: SessionPlacementRunner? = nil)
     {
         self.state = state
@@ -8289,6 +8291,7 @@ public struct ActiveWorkerSessionPlacement: Codable, Sendable {
         self.lastliveeventackcursor = lastliveeventackcursor
         self.workspaceresultconflict = workspaceresultconflict
         self.diskspace = diskspace
+        self.workspaceresultreconciling = workspaceresultreconciling
         self.runner = runner
     }
 
@@ -8309,6 +8312,7 @@ public struct ActiveWorkerSessionPlacement: Codable, Sendable {
         case lastliveeventackcursor = "lastLiveEventAckCursor"
         case workspaceresultconflict = "workspaceResultConflict"
         case diskspace = "diskSpace"
+        case workspaceresultreconciling = "workspaceResultReconciling"
         case runner
     }
 }
@@ -8330,6 +8334,7 @@ public struct DrainingSessionPlacement: Codable, Sendable {
     public let lastliveeventackcursor: Int?
     public let workspaceresultconflict: [String: AnyCodable]?
     public let diskspace: SessionPlacementDiskSpace?
+    public let workspaceresultreconciling: Bool?
 
     public init(
         state: String,
@@ -8347,7 +8352,8 @@ public struct DrainingSessionPlacement: Codable, Sendable {
         lasttranscriptackcursor: Int? = nil,
         lastliveeventackcursor: Int? = nil,
         workspaceresultconflict: [String: AnyCodable]? = nil,
-        diskspace: SessionPlacementDiskSpace? = nil)
+        diskspace: SessionPlacementDiskSpace? = nil,
+        workspaceresultreconciling: Bool? = nil)
     {
         self.state = state
         self.generation = generation
@@ -8365,6 +8371,7 @@ public struct DrainingSessionPlacement: Codable, Sendable {
         self.lastliveeventackcursor = lastliveeventackcursor
         self.workspaceresultconflict = workspaceresultconflict
         self.diskspace = diskspace
+        self.workspaceresultreconciling = workspaceresultreconciling
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -8384,6 +8391,7 @@ public struct DrainingSessionPlacement: Codable, Sendable {
         case lastliveeventackcursor = "lastLiveEventAckCursor"
         case workspaceresultconflict = "workspaceResultConflict"
         case diskspace = "diskSpace"
+        case workspaceresultreconciling = "workspaceResultReconciling"
     }
 }
 
@@ -9976,6 +9984,7 @@ public struct SessionsCreateParams: Codable, Sendable {
     public let forkfrom: String?
     public let emitcommandhooks: Bool?
     public let succeedsparent: Bool?
+    public let timeoutms: Int?
     public let task: String?
     public let message: String?
     public let mentions: [HumanMention]?
@@ -10011,6 +10020,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         forkfrom: String? = nil,
         emitcommandhooks: Bool? = nil,
         succeedsparent: Bool? = nil,
+        timeoutms: Int? = nil,
         task: String? = nil,
         message: String? = nil,
         mentions: [HumanMention]? = nil,
@@ -10045,6 +10055,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         self.forkfrom = forkfrom
         self.emitcommandhooks = emitcommandhooks
         self.succeedsparent = succeedsparent
+        self.timeoutms = timeoutms
         self.task = task
         self.message = message
         self.mentions = mentions
@@ -10081,6 +10092,7 @@ public struct SessionsCreateParams: Codable, Sendable {
         case forkfrom = "forkFrom"
         case emitcommandhooks = "emitCommandHooks"
         case succeedsparent = "succeedsParent"
+        case timeoutms = "timeoutMs"
         case task
         case message
         case mentions

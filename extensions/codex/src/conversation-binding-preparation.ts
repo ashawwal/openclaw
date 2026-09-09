@@ -316,7 +316,7 @@ export async function buildConversationThreadRequestForClient(
   const effectiveConfig = await readCodexEffectiveConfig(
     client,
     resolved.workspaceDir,
-    requestOptions().signal,
+    requestOptions(),
   );
   requestOptions();
   return buildConversationThreadRequest(resolved, serviceTier, effectiveConfig);
