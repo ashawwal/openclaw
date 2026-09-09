@@ -19,6 +19,7 @@ import { CodexAppServerRpcError } from "./client.js";
 import { createCodexTestHostCapabilities } from "./host-capability.test-support.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
 import type { CodexPluginThreadConfig } from "./plugin-thread-config.js";
+import { buildCodexProjectDocThreadConfig } from "./project-doc-thread-config.js";
 import {
   CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
   type CodexDynamicToolFunctionSpec,
@@ -2179,6 +2180,18 @@ describe("Codex app-server native code mode config", () => {
       "features.standalone_web_search": false,
       web_search: "cached",
     });
+  });
+
+  it("prefers request project-document budgets over effective native config", () => {
+    expect(buildCodexProjectDocThreadConfig(undefined, { project_doc_max_bytes: 200_000 })).toEqual(
+      { project_doc_max_bytes: 200_000 },
+    );
+    expect(
+      buildCodexProjectDocThreadConfig(
+        { project_doc_max_bytes: 64_000 },
+        { project_doc_max_bytes: 200_000 },
+      ),
+    ).toEqual({ project_doc_max_bytes: 64_000 });
   });
 });
 

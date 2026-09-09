@@ -27,6 +27,7 @@ import {
   releaseCodexAppServerLiveThread,
 } from "./app-server/client-runtime.js";
 import type { CodexAppServerClient } from "./app-server/client.js";
+import { readCodexEffectiveConfig } from "./app-server/config-layer-policy.js";
 import {
   canUseCodexModelBackedApprovalsReviewerForModel,
   readCodexPluginConfig,
@@ -281,9 +282,10 @@ async function resolveThreadBindingRuntime(params: CodexThreadBindingParams) {
   };
 }
 
-export function buildConversationThreadRequest(
+function buildConversationThreadRequest(
   resolved: ConversationAppServerRuntime & { model?: string; modelProvider?: string },
   serviceTier?: CodexServiceTier | null,
+  effectiveNativeConfig?: JsonObject,
 ): CodexThreadStartParams {
   return {
     cwd: resolved.workspaceDir,
@@ -295,14 +297,34 @@ export function buildConversationThreadRequest(
     ...(resolved.runtime.sessionRoot
       ? { runtimeWorkspaceRoots: [resolved.runtime.sessionRoot] }
       : {}),
-    ...codexConversationSandboxOrPermissions(resolved.runtime, resolved.runtime.sandbox),
+    ...codexConversationSandboxOrPermissions(
+      resolved.runtime,
+      resolved.runtime.sandbox,
+      effectiveNativeConfig,
+    ),
     ...(serviceTier ? { serviceTier } : {}),
   };
+}
+
+export async function buildConversationThreadRequestForClient(
+  client: CodexAppServerClient,
+  resolved: ConversationAppServerRuntime & { model?: string; modelProvider?: string },
+  serviceTier: CodexServiceTier | null | undefined,
+  requestOptions: () => CodexAppServerLeasedRequestOptions,
+): Promise<CodexThreadStartParams> {
+  const effectiveConfig = await readCodexEffectiveConfig(
+    client,
+    resolved.workspaceDir,
+    requestOptions().signal,
+  );
+  requestOptions();
+  return buildConversationThreadRequest(resolved, serviceTier, effectiveConfig.config);
 }
 
 function codexConversationSandboxOrPermissions(
   runtime: Pick<ConversationAppServerRuntime["runtime"], "networkProxy">,
   sandbox: ConversationAppServerRuntime["runtime"]["sandbox"],
+  effectiveNativeConfig?: JsonObject,
 ): {
   sandbox?: ConversationAppServerRuntime["runtime"]["sandbox"];
   config?: JsonObject;
@@ -314,6 +336,7 @@ function codexConversationSandboxOrPermissions(
   // is the only authoritative boundary for this handlerless runtime.
   const config = buildCodexProjectDocThreadConfig(
     mergeCodexThreadConfigs(networkProxy?.configPatch, buildDisabledAppsConfigPatch()),
+    effectiveNativeConfig,
   );
   return networkProxy ? { config } : { sandbox, config };
 }
@@ -397,9 +420,11 @@ async function bindThread(params: CodexThreadBindingParams, threadId?: string): 
       lease: clientLease,
       options: resolved.clientOptions,
       run: async (client, requestOptions) => {
-        const request = buildConversationThreadRequest(
+        const request = await buildConversationThreadRequestForClient(
+          client,
           resolved,
           params.serviceTier ?? resolved.runtime.serviceTier,
+          requestOptions,
         );
         let response: CodexThreadResumeResponse | CodexThreadStartResponse;
         // Codex applies network-proxy permission profiles at thread/start. Resuming

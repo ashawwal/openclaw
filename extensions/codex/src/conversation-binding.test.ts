@@ -59,6 +59,9 @@ const codexRequirementsTomlMock = vi.hoisted(() => vi.fn<() => string | undefine
 const resolveSandboxContextMock = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<{ enabled: boolean } | null>>(async () => null),
 );
+const configLayerPolicyMocks = vi.hoisted(() => ({
+  readCodexEffectiveConfig: vi.fn(),
+}));
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -89,6 +92,11 @@ vi.mock("openclaw/plugin-sdk/agent-harness-runtime", async (importOriginal) => {
     resolveSandboxContext: resolveSandboxContextMock,
   };
 });
+
+vi.mock("./app-server/config-layer-policy.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./app-server/config-layer-policy.js")>()),
+  readCodexEffectiveConfig: configLayerPolicyMocks.readCodexEffectiveConfig,
+}));
 
 vi.mock("openclaw/plugin-sdk/conversation-binding-runtime", async (importOriginal) => {
   const actual =
@@ -490,6 +498,12 @@ describe("codex conversation binding", () => {
     codexRequirementsTomlMock.mockReset();
     resolveSandboxContextMock.mockReset();
     resolveSandboxContextMock.mockResolvedValue(null);
+    configLayerPolicyMocks.readCodexEffectiveConfig.mockReset();
+    configLayerPolicyMocks.readCodexEffectiveConfig.mockResolvedValue({
+      config: {},
+      origins: {},
+      layers: [],
+    });
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -806,6 +820,11 @@ describe("codex conversation binding", () => {
       auth: { order: { openai: ["openai:default"] } },
     };
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    configLayerPolicyMocks.readCodexEffectiveConfig.mockResolvedValue({
+      config: { project_doc_max_bytes: 200_000 },
+      origins: {},
+      layers: [],
+    });
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
       request: vi.fn(async (method: string, requestParams: Record<string, unknown>) => {
         requests.push({ method, params: requestParams });
@@ -838,7 +857,12 @@ describe("codex conversation binding", () => {
     expect(requests[0]?.params.model).toBe("gpt-5.4-mini");
     expect(requests[0]?.params.personality).toBe("none");
     expect(requests[0]?.params.ephemeral).toBe(true);
-    expect(requests[0]?.params.config).toMatchObject({ project_doc_max_bytes: 131_072 });
+    expect(requests[0]?.params.config).toMatchObject({ project_doc_max_bytes: 200_000 });
+    expect(configLayerPolicyMocks.readCodexEffectiveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ request: expect.any(Function) }),
+      tempDir,
+      undefined,
+    );
     // An intent without an authored profile must not turn an implicit lookup into
     // a persisted pin; shared-client startup owns that selection.
     const binding = await readTestConversationBinding(sessionFile);

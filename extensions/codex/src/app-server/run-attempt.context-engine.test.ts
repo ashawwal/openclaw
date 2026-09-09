@@ -1247,6 +1247,7 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
       ]);
 
       expect(harness.requests.map((request) => request.method)).toEqual([
+        "config/read",
         "thread/start",
         "turn/start",
       ]);
