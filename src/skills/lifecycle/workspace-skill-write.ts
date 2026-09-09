@@ -374,6 +374,7 @@ async function writeWorkspaceSkillFile(
   const targetRoot = await root(file.rootDir);
   assertMutationAuthorized?.();
   await targetRoot.write(file.relativePath, file.content, {
+    assertBeforeMutation: assertMutationAuthorized,
     encoding: "utf8",
     mkdir: true,
     overwrite,
