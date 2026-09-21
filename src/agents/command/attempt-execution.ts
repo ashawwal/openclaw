@@ -52,10 +52,7 @@ import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../agent-run-ter
 import type { AgentRunTerminalReplySnapshot } from "../agent-run-terminal-reply.types.js";
 import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
 import { ensureAuthProfileStore } from "../auth-profiles/store-runtime.js";
-import {
-  resizeExecApprovalContinuationPrompt,
-  type ExecApprovalContinuationPromptRange,
-} from "../bash-tools.exec-approval-output.js";
+import { resizeExecApprovalContinuationPrompt } from "../bash-tools.exec-approval-output.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../bootstrap-budget.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
 import {
@@ -107,6 +104,7 @@ import { DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS } from "../tool-result-limits.js";
 import {
   buildClaudeCliFallbackContextPrelude,
   claudeCliSessionTranscriptHasContent,
+  rebaseExecApprovalContinuationPromptRange,
   resolveFallbackRetryPrompt,
 } from "./attempt-execution.helpers.js";
 import { resolveAgentRunContext } from "./run-context.js";
@@ -123,24 +121,6 @@ export {
 } from "./attempt-execution.helpers.js";
 
 const log = createSubsystemLogger("agents/agent-command");
-
-function rebaseExecApprovalContinuationPromptRange(params: {
-  body: string;
-  prompt: string;
-  range?: ExecApprovalContinuationPromptRange;
-}): ExecApprovalContinuationPromptRange | undefined {
-  if (!params.range) {
-    return undefined;
-  }
-  if (!params.prompt.endsWith(params.body)) {
-    throw new Error("exec approval continuation prompt range could not be rebased");
-  }
-  const offset = params.prompt.length - params.body.length;
-  return {
-    start: offset + params.range.start,
-    end: offset + params.range.end,
-  };
-}
 
 function shouldSuppressEmbeddedLiveStreamOutput(params: { opts: AgentCommandOpts }): boolean {
   return params.opts.sessionEffects === "internal" && params.opts.deliver !== true;

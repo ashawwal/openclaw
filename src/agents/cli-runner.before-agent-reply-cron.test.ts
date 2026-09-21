@@ -120,6 +120,15 @@ type ProductionRunCliAgent = typeof import("./cli-runner.js").runCliAgent;
 type TestRunCliAgent = (
   params: Omit<Parameters<ProductionRunCliAgent>[0], "admittedRunContext">,
 ) => ReturnType<ProductionRunCliAgent>;
+
+type StubRunParams = typeof baseRunParams & {
+  trigger?: string;
+  preparedRunAdmission?: {
+    admit: (runtimeKind: "embedded") => Promise<{
+      operationalRunInstance: OperationalRunInstanceRef;
+    }>;
+  };
+};
 let runCliAgent: TestRunCliAgent;
 let restoreCliRunnerTestDeps: typeof import("./cli-runner.js").restoreCliRunnerTestDeps;
 let setCliRunnerTestDeps: typeof import("./cli-runner.js").setCliRunnerTestDeps;
@@ -147,16 +156,7 @@ async function captureRejectedClaudeRun(
   return { error, events };
 }
 
-async function makeStubContext(
-  params: typeof baseRunParams & {
-    trigger?: string;
-    preparedRunAdmission?: {
-      admit: (runtimeKind: "embedded") => Promise<{
-        operationalRunInstance: OperationalRunInstanceRef;
-      }>;
-    };
-  },
-) {
+async function makeStubContext(params: StubRunParams) {
   // Stub only the prepared context shape runCliAgent needs after the hook gate.
   const admittedRunContext = await params.preparedRunAdmission?.admit("embedded");
   return {
@@ -186,16 +186,7 @@ beforeEach(() => {
   executePreparedCliRunMock.mockResolvedValue({ text: "" });
   prepareCliRunContextMock.mockReset();
   prepareCliRunContextMock.mockImplementation(async (params) => {
-    return await makeStubContext(
-      params as typeof baseRunParams & {
-        trigger?: string;
-        preparedRunAdmission?: {
-          admit: (runtimeKind: "embedded") => Promise<{
-            operationalRunInstance: OperationalRunInstanceRef;
-          }>;
-        };
-      },
-    );
+    return await makeStubContext(params as StubRunParams);
   });
   closeCliSessionMock.mockReset();
   closeMcpLoopbackServerMock.mockReset();

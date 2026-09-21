@@ -69,7 +69,11 @@ import {
   SUBAGENT_ANNOUNCE_EMBEDDED_DELIVERY_CASES,
   type SubagentAnnounceDeliveryCase,
 } from "./attempt-execution.announce.test-support.js";
-import { createCliImageCapabilityPlugins } from "./attempt-execution.cli.test-support.js";
+import {
+  createCliImageCapabilityPlugins,
+  makeCliResult,
+  persistCliTranscriptEntry,
+} from "./attempt-execution.cli.test-support.js";
 import { runAgentAttempt as runAgentAttemptImpl } from "./attempt-execution.js";
 import { resolveClaudeCliProjectDirForWorkspace } from "./claude-cli-project-dir.js";
 import { resolveEmbeddedModelSelection } from "./model-selection.js";
@@ -221,54 +225,8 @@ vi.mock("../embedded-agent.js", () => ({
   runEmbeddedAgent: runEmbeddedAgentMock,
 }));
 
-function makeCliResult(text: string, sessionId = "session-cli"): EmbeddedAgentRunResult {
-  return {
-    payloads: [{ text }],
-    meta: {
-      durationMs: 5,
-      finalAssistantVisibleText: text,
-      agentMeta: {
-        sessionId,
-        ...(sessionId ? { cliSessionBinding: { sessionId } } : {}),
-        provider: "claude-cli",
-        model: "opus",
-        usage: {
-          input: 12,
-          output: 4,
-          cacheRead: 3,
-          cacheWrite: 0,
-          total: 19,
-        },
-        lastCallUsage: {
-          input: 12,
-          output: 4,
-          cacheRead: 3,
-          cacheWrite: 0,
-          total: 19,
-        },
-      },
-      executionTrace: {
-        winnerProvider: "claude-cli",
-        winnerModel: "opus",
-        fallbackUsed: false,
-        runner: "cli",
-      },
-    },
-  };
-}
-
 function makeSessionEntry(sessionId: string, overrides: Partial<SessionEntry> = {}): SessionEntry {
   return { sessionId, updatedAt: Date.now(), ...overrides };
-}
-
-async function persistCliTranscriptEntry(
-  params: Parameters<typeof persistCliTurnTranscript>[0],
-): Promise<SessionEntry | undefined> {
-  const result = await persistCliTurnTranscript(params);
-  if (result.kind !== "persisted") {
-    throw new Error("expected CLI transcript persistence to keep the current session");
-  }
-  return result.sessionEntry;
 }
 
 type TranscriptReadTarget =
