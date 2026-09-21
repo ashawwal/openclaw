@@ -2,11 +2,18 @@
 // applying generated skills to the workspace.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { consumeRunSkillUsage, recordRunSkillUsage } from "../../skills/runtime/run-usage.js";
-import { listSkillProposalEvents } from "../../skills/workshop/service.js";
+import { configureFsSafeNative } from "@openclaw/fs-safe";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { root } from "../../infra/fs-safe.js";
+import {
+  bindWorkspaceSkillUsage,
+  consumeRunSkillUsage,
+  recordRunSkillUsage,
+} from "../../skills/runtime/run-usage.js";
+import { applySkillProposal, listSkillProposalEvents } from "../../skills/workshop/service.js";
 import { SKILL_AUTHORING_STANDARDS_PROMPT } from "../../skills/workshop/skill-authoring-standards.js";
 import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
+import { readSkillProposalRollback } from "../../skills/workshop/store.js";
 import type { SkillWorkshopProposalMutationBudget } from "../../skills/workshop/types.js";
 import {
   createOpenClawTestState,
@@ -68,6 +75,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   runAuthorities.cleanup();
+  vi.restoreAllMocks();
+  configureFsSafeNative({ mode: "auto" });
   await testState.cleanup();
   await tempDirs.cleanup();
 });
@@ -778,6 +787,122 @@ describe("skill_workshop tool", () => {
       consumeRunSkillUsage(runId);
     },
   );
+
+  it("rejects foreground repair when its admitted run closes while publication is queued", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-skill-workshop-revoked-publication-");
+    const runId = "repair-revoked-publication";
+    const operationalRunInstance = runAuthorities.admit(runId);
+    const skillName = "queued-authority-skill";
+    const tool = runAuthorities.bind(
+      createSkillWorkshopTool({
+        workspaceDir,
+        config: { skills: { workshop: { autonomous: { mode: "propose" } } } },
+        agentId: "main",
+        origin: { agentId: "main", runId },
+      }),
+      operationalRunInstance,
+    );
+    const created = await tool.execute("repair-create", {
+      action: "create",
+      name: skillName,
+      description: "Keep publication bound to the admitted run",
+      proposal_content: "# Queued Authority Skill\n\nOriginal body.\n",
+    });
+    await tool.execute("repair-create-apply", {
+      action: "apply",
+      proposal_id: (created.details as { id: string }).id,
+    });
+
+    const skillsRoot = resolveWorkshopSkillsDir({}, "main", testState.env);
+    const skillFile = workshopSkillPath(skillName, "SKILL.md");
+    const original = await fs.readFile(skillFile, "utf8");
+    await tool.execute("repair-read", { action: "read", skill_name: skillName });
+    recordRunSkillUsage({
+      runId,
+      operationalRunInstance,
+      name: skillName,
+      source: "workspace",
+      activation: "read",
+      skillFile,
+    });
+    const isAuthorized = bindWorkspaceSkillUsage({ operationalRunInstance, skillFile });
+    expect(isAuthorized?.()).toBe(true);
+
+    const patch = await tool.execute("repair-patch", {
+      action: "patch",
+      skill_name: skillName,
+      old_string: "Original body.",
+      new_string: "Forbidden replacement.",
+    });
+    const patchDetails = patch.details as { id: string; revisionHash: string };
+    expect(patch.details).toMatchObject({ status: "pending", kind: "update" });
+
+    configureFsSafeNative({ mode: "off" });
+    const rename = fs.rename.bind(fs);
+    let releaseFirstRename: (() => void) | undefined;
+    const firstRenameRelease = new Promise<void>((resolve) => {
+      releaseFirstRename = resolve;
+    });
+    let markFirstRenameStarted: (() => void) | undefined;
+    const firstRenameStarted = new Promise<void>((resolve) => {
+      markFirstRenameStarted = resolve;
+    });
+    let blocked = false;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      if (!blocked && String(to) === skillFile) {
+        blocked = true;
+        markFirstRenameStarted?.();
+        await firstRenameRelease;
+      }
+      await rename(from, to);
+    });
+
+    const targetRoot = await root(skillsRoot);
+    const blocker = targetRoot.write(`${skillName}/SKILL.md`, original, {
+      encoding: "utf8",
+      overwrite: true,
+    });
+    await firstRenameStarted;
+
+    const application = applySkillProposal({
+      workspaceDir,
+      agentId: "main",
+      config: {},
+      proposalId: patchDetails.id,
+      expectedRevisionHash: patchDetails.revisionHash,
+      reason: "Foreground repair of a used skill",
+      assertMutationAuthorized: () => {
+        if (isAuthorized?.() !== true) {
+          throw new Error("run authority closed while Workshop publication was queued");
+        }
+      },
+    });
+    await vi.waitFor(async () => {
+      await expect(
+        readSkillProposalRollback(patchDetails.id, {
+          config: {},
+          agentId: "main",
+        }),
+      ).resolves.not.toBeNull();
+    });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(runAuthorities.release(operationalRunInstance)).toBe(true);
+    releaseFirstRename?.();
+
+    await blocker;
+    await expect(application).rejects.toThrow(
+      "run authority closed while Workshop publication was queued",
+    );
+    await expect(fs.readFile(skillFile, "utf8")).resolves.toBe(original);
+    await expect(
+      readSkillProposalRollback(patchDetails.id, {
+        config: {},
+        agentId: "main",
+      }),
+    ).resolves.toBeNull();
+  });
 
   it("matches an aliased used-skill receipt by canonical file", async () => {
     const workspaceDir = await tempDirs.make("openclaw-skill-workshop-repair-alias-");

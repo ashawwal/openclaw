@@ -30,6 +30,7 @@ export function readSkillWorkshopTestProposalRecord(
 export function createTrackedSkillWorkshopRunAuthorities(): {
   admit: (runId: string) => OperationalRunInstanceRef;
   bind: (tool: AnyAgentTool, operationalRunInstance: OperationalRunInstanceRef) => AnyAgentTool;
+  release: (operationalRunInstance: OperationalRunInstanceRef) => boolean;
   cleanup: () => void;
 } {
   const entries: Array<{
@@ -51,6 +52,17 @@ export function createTrackedSkillWorkshopRunAuthorities(): {
         sessionKey: "skill-workshop-test",
         operationalRunInstance,
       }),
+    release: (operationalRunInstance) => {
+      const index = entries.findIndex(
+        (entry) => entry.operationalRunInstance === operationalRunInstance,
+      );
+      if (index < 0) {
+        return false;
+      }
+      const [entry] = entries.splice(index, 1);
+      discardRunWorkspaceSkillUsage(entry.operationalRunInstance);
+      return releaseAgentRunDelegatedAuthority(entry.authority);
+    },
     cleanup: () => {
       for (const entry of entries.splice(0)) {
         discardRunWorkspaceSkillUsage(entry.operationalRunInstance);
