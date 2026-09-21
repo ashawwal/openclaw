@@ -59,7 +59,11 @@ export function createTrackedSkillWorkshopRunAuthorities(): {
       if (index < 0) {
         return false;
       }
-      const [entry] = entries.splice(index, 1);
+      const entry = entries[index];
+      if (!entry) {
+        return false;
+      }
+      entries.splice(index, 1);
       discardRunWorkspaceSkillUsage(entry.operationalRunInstance);
       return releaseAgentRunDelegatedAuthority(entry.authority);
     },
