@@ -864,6 +864,29 @@ describe("skill_workshop tool", () => {
     });
     await firstRenameStarted;
 
+    type FsSafeRoot = Awaited<ReturnType<typeof root>>;
+    const rootPrototype = Object.getPrototypeOf(targetRoot) as {
+      write: FsSafeRoot["write"];
+    };
+    const write = rootPrototype.write;
+    let markApplicationWriteQueued: (() => void) | undefined;
+    const applicationWriteQueued = new Promise<void>((resolve) => {
+      markApplicationWriteQueued = resolve;
+    });
+    vi.spyOn(rootPrototype, "write").mockImplementation(
+      function (this: FsSafeRoot, relativePath, data, options) {
+        const pending = write.call(this, relativePath, data, options);
+        if (this.rootReal === targetRoot.rootReal && relativePath === `${skillName}/SKILL.md`) {
+          // Root.write registers the task in fs-safe's same-path queue before
+          // returning its promise. The blocker was already admitted before this
+          // spy, so the first matching call is the production publication.
+          markApplicationWriteQueued?.();
+          markApplicationWriteQueued = undefined;
+        }
+        return pending;
+      },
+    );
+
     const application = applySkillProposal({
       workspaceDir,
       agentId: "main",
@@ -877,17 +900,13 @@ describe("skill_workshop tool", () => {
         }
       },
     });
-    await vi.waitFor(async () => {
-      await expect(
-        readSkillProposalRollback(patchDetails.id, {
-          config: {},
-          agentId: "main",
-        }),
-      ).resolves.not.toBeNull();
-    });
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
+    await applicationWriteQueued;
+    await expect(
+      readSkillProposalRollback(patchDetails.id, {
+        config: {},
+        agentId: "main",
+      }),
+    ).resolves.not.toBeNull();
     expect(runAuthorities.release(operationalRunInstance)).toBe(true);
     releaseFirstRename?.();
 
