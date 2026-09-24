@@ -435,7 +435,7 @@ describe("WhatsApp canonical message_sent delivery", () => {
     });
     expect(failure).toHaveProperty("cause", expect.any(PlatformMessageNotDispatchedError));
     expect(sendMedia).toHaveBeenCalledOnce();
-    expect(reply).toHaveBeenCalledExactlyOnceWith("caption", undefined);
+    expect(reply).toHaveBeenCalledExactlyOnceWith("caption", undefined, { reconnectWindows: 3 });
     expect(recordChannelActivity).toHaveBeenCalledExactlyOnceWith({
       channel: "whatsapp",
       accountId: "default",
@@ -572,7 +572,9 @@ describe("WhatsApp canonical message_sent delivery", () => {
       expect(reply).not.toHaveBeenCalled();
       expect(replyLogger.warn).not.toHaveBeenCalled();
     } else {
-      expect(reply).toHaveBeenCalledExactlyOnceWith("caption\n⚠️ Media failed.", undefined);
+      expect(reply).toHaveBeenCalledExactlyOnceWith("caption\n⚠️ Media failed.", undefined, {
+        reconnectWindows: 3,
+      });
     }
     expect(recordChannelActivity).toHaveBeenCalledExactlyOnceWith({
       channel: "whatsapp",
@@ -679,7 +681,9 @@ describe("WhatsApp canonical message_sent delivery", () => {
     );
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(sendMedia).toHaveBeenCalledOnce();
-    expect(reply).toHaveBeenCalledExactlyOnceWith("voice caption", undefined);
+    expect(reply).toHaveBeenCalledExactlyOnceWith("voice caption", undefined, {
+      reconnectWindows: 3,
+    });
     expect(replyLogger.warn).not.toHaveBeenCalled();
     expect(recordChannelActivity).toHaveBeenCalledExactlyOnceWith({
       channel: "whatsapp",
@@ -805,7 +809,9 @@ describe("WhatsApp canonical message_sent delivery", () => {
       expect.objectContaining({ messageId: "dispatch-accepted-first-media" }),
     );
     expect(sendMedia).toHaveBeenCalledTimes(2);
-    expect(reply).toHaveBeenCalledExactlyOnceWith("⚠️ Media unavailable.", undefined);
+    expect(reply).toHaveBeenCalledExactlyOnceWith("⚠️ Media unavailable.", undefined, {
+      reconnectWindows: 3,
+    });
     expect(replyLogger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ mediaUrl: "/tmp/rejected-second.jpg" }),
       "failed to send web media reply",

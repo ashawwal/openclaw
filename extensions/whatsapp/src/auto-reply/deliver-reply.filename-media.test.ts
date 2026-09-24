@@ -110,7 +110,7 @@ describe("WhatsApp filename-only media delivery", () => {
       });
       if (payloadKey === "audio") {
         expect(mediaPayload).toHaveProperty("ptt", true);
-        expect(reply).toHaveBeenCalledWith("caption", undefined);
+        expect(reply).toHaveBeenCalledWith("caption", undefined, { reconnectWindows: 3 });
       } else {
         expect(mediaPayload).toHaveProperty("caption", "caption");
       }
