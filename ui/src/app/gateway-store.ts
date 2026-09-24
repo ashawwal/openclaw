@@ -168,7 +168,10 @@ export function createApplicationGateway(
   };
   const recordGatewayEvent = (event: Parameters<GatewayEventListener>[0]) => {
     const eventClient = client;
-    if (event.event === "plugins.changed" && eventClient) {
+    if (
+      (event.event === "plugins.changed" || event.event === "plugins.controlUi.changed") &&
+      eventClient
+    ) {
       // Capability updates keep hello identity; reconnects replace it.
       const eventHello = snapshot.hello;
       const readCurrent = () =>
@@ -179,7 +182,7 @@ export function createApplicationGateway(
           : null;
       void import("./plugin-capabilities.runtime.ts")
         .then(({ refreshPluginCapabilities }) =>
-          refreshPluginCapabilities(event.payload, eventClient, readCurrent, setSnapshot, (url) =>
+          refreshPluginCapabilities(event, eventClient, readCurrent, setSnapshot, (url) =>
             canvasSurface.start(eventClient, canvasSurface.generation, url),
           ),
         )
@@ -486,6 +489,7 @@ export function createApplicationGateway(
           : undefined;
         // Display-only evidence; admission is still re-derived from the next hello.
         setUnavailableDeadline("suspensionPhase", suspensionPhase ? 0 : undefined);
+        const closeReason = formatUiExternalText(reason);
         setSnapshot({
           client: nextClient,
           phase:
@@ -509,7 +513,11 @@ export function createApplicationGateway(
             ? null
             : error?.message
               ? formatUiError(error.message)
-              : `disconnected (${code}): ${formatUiExternalText(reason, t("common.unknown"))}`,
+              : closeReason
+                ? `disconnected (${code}): ${closeReason}`
+                : t(willRetry ? "connection.interruptedRetrying" : "connection.interrupted", {
+                    code: String(code),
+                  }),
           lastErrorCode: startupPending ? null : lastErrorCode,
           lastErrorAuthReason: startupPending ? null : readConnectionAuthReason(error?.details),
         });

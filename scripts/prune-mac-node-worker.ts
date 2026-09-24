@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Reduces an installed OpenClaw package to the private macOS worker runtime.
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import { isBuiltin } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectPackageRootImports } from "../src/infra/package-root-imports.js";
@@ -81,10 +80,7 @@ function collectReferencedRuntimeProcessEntrypoints(source: string): string[] {
   const targets: string[] = [];
   for (const [name, entrypoint] of Object.entries(runtimeProcessEntrypoints)) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    const reference = new RegExp(
-      `(?:\\.|\\?\\.)${escaped}\\b|\\[\\s*["']${escaped}["']\\s*\\]`,
-      "u",
-    );
+    const reference = new RegExp(`(?:\\.|\\?\\.)${escaped}\\b|["']${escaped}["']`, "u");
     if (reference.test(source)) {
       targets.push(`dist/${entrypoint.distWorkerPath}`);
     }
@@ -119,7 +115,32 @@ function collectNodeHostPluginSeeds(packageRoot: string): string[] {
     });
 }
 
-function collectOwnedPackageDependencies(packageRoot: string, dependencies: Set<string>): void {
+function readNodeBuiltinModules(nodeExecutable: string): ReadonlySet<string> {
+  const builtinModules: unknown = JSON.parse(
+    execFileSync(
+      nodeExecutable,
+      [
+        "--input-type=module",
+        "--eval",
+        'import { builtinModules } from "node:module"; process.stdout.write(JSON.stringify(builtinModules));',
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ),
+  );
+  if (
+    !Array.isArray(builtinModules) ||
+    !builtinModules.every((name: unknown): name is string => typeof name === "string")
+  ) {
+    throw new Error(`Mac worker Node runtime returned invalid builtin modules: ${nodeExecutable}`);
+  }
+  return new Set(builtinModules);
+}
+
+function collectOwnedPackageDependencies(
+  packageRoot: string,
+  dependencies: Set<string>,
+  nodeBuiltinModules: ReadonlySet<string>,
+): void {
   const pending = [...dependencies].filter((name) => name.startsWith("@openclaw/"));
   const visited = new Set<string>();
   while (pending.length) {
@@ -142,7 +163,7 @@ function collectOwnedPackageDependencies(packageRoot: string, dependencies: Set<
         ...collectCreatedRequireResolveImports(source),
       ]) {
         const dependency = packageNameFromSpecifier(specifier);
-        if (!dependency || dependency === "openclaw" || isBuiltin(dependency)) {
+        if (!dependency || dependency === "openclaw" || nodeBuiltinModules.has(dependency)) {
           continue;
         }
         if (!dependencies.has(dependency)) {
@@ -181,7 +202,10 @@ function collectSeeds(packageRoot: string, manifest: PackageManifest): Set<strin
   return seeds;
 }
 
-export function planMacNodeWorkerClosure(packageRoot: string): {
+export function planMacNodeWorkerClosure(
+  packageRoot: string,
+  nodeExecutable: string,
+): {
   dependencies: string[];
   files: string[];
 } {
@@ -189,6 +213,8 @@ export function planMacNodeWorkerClosure(packageRoot: string): {
   if (manifest.name !== "openclaw" || !manifest.version) {
     throw new Error("Mac worker closure requires an installed OpenClaw package");
   }
+  // The installed Node target owns these facts, including when Bun runs the planner.
+  const nodeBuiltinModules = readNodeBuiltinModules(nodeExecutable);
   const packageFiles = walkFiles(packageRoot).filter(
     (relative) => relative !== "package.json" && !relative.startsWith("node_modules/"),
   );
@@ -204,9 +230,9 @@ export function planMacNodeWorkerClosure(packageRoot: string): {
       throw new Error(`Mac worker closure seed is missing: ${importerPath}`);
     }
     const source = fs.readFileSync(path.join(packageRoot, importerPath), "utf8");
-    // Runtime launch descriptors are executable edges, but their target paths
-    // are data rather than module imports. Follow every descriptor referenced by
-    // a retained chunk, including descriptors reached from another worker.
+    // Descriptor properties and named launch IDs are executable edges, not
+    // module imports. Follow both in retained chunks and workers; quoted IDs
+    // also cover conditional selection and renamed resolver bindings.
     for (const runtimeTarget of collectReferencedRuntimeProcessEntrypoints(source)) {
       if (!files.has(runtimeTarget)) {
         files.add(runtimeTarget);
@@ -242,7 +268,7 @@ export function planMacNodeWorkerClosure(packageRoot: string): {
       ...collectCreatedRequireResolveImports(source),
     ]) {
       const packageName = packageNameFromSpecifier(specifier);
-      if (packageName && packageName !== "openclaw" && !isBuiltin(packageName)) {
+      if (packageName && packageName !== "openclaw" && !nodeBuiltinModules.has(packageName)) {
         dependencies.add(packageName);
       }
     }
@@ -250,7 +276,7 @@ export function planMacNodeWorkerClosure(packageRoot: string): {
   // Internal packages are published without their own dependency declarations;
   // the root package owns those specs. Follow their built imports so pruning an
   // otherwise unrelated root dependency cannot break a retained internal chunk.
-  collectOwnedPackageDependencies(packageRoot, dependencies);
+  collectOwnedPackageDependencies(packageRoot, dependencies, nodeBuiltinModules);
   return {
     dependencies: [...dependencies].toSorted((left, right) => left.localeCompare(right)),
     files: orderedFiles,
@@ -307,7 +333,8 @@ function pruneMacNodeWorker(runtime: string): void {
     throw new Error("Mac worker package root is not a canonical installed package");
   }
   const manifest = readManifest(packageRoot);
-  const plan = planMacNodeWorkerClosure(packageRoot);
+  const node = path.join(resolvedRuntime, "bin/node");
+  const plan = planMacNodeWorkerClosure(packageRoot, node);
   const dependencies = Object.fromEntries(
     plan.dependencies
       .filter((name) => !REQUIRED_OPTIONAL_DEPENDENCIES.includes(name as "sqlite-vec"))
@@ -342,7 +369,6 @@ function pruneMacNodeWorker(runtime: string): void {
       2,
     )}\n`,
   );
-  const node = path.join(resolvedRuntime, "bin/node");
   const npm = path.join(resolvedRuntime, "lib/node_modules/npm/bin/npm-cli.js");
   const result = spawnSync(
     node,

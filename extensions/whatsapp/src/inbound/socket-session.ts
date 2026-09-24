@@ -204,11 +204,8 @@ export async function createWhatsAppAttachedSocketSession(options: SocketSession
     );
   };
 
-  const rememberOutboundMessage = (remoteJid: string, result: unknown) => {
-    const messageId =
-      typeof result === "object" && result && "key" in result
-        ? ((result as { key?: { id?: string } }).key?.id ?? "")
-        : "";
+  const rememberOutboundMessage = (remoteJid: string, result: WAMessage | undefined) => {
+    const messageId = result?.key?.id;
     if (!messageId) {
       return;
     }
@@ -217,10 +214,7 @@ export async function createWhatsAppAttachedSocketSession(options: SocketSession
       remoteJid,
       messageId,
     });
-    const message =
-      typeof result === "object" && result && "message" in result
-        ? (result as { message?: proto.IMessage }).message
-        : undefined;
+    const message = result?.message;
     rememberBaileysMessage(remoteJid, messageId, message);
     // Baileys derives the participant for fromMe quotes from its own userJid.
     // Retain only the facts needed to avoid the cache-miss fromMe=false fallback.
@@ -399,7 +393,7 @@ export async function createWhatsAppAttachedSocketSession(options: SocketSession
   };
 
   const socketOperations: WhatsAppSocketOperationAdapter = {
-    sendMessage: (jid, content, sendOptions) => sendTrackedMessage(jid, content, sendOptions),
+    sendMessage: sendTrackedMessage,
     sendPresenceUpdate: async (presenceLocal, jid) => {
       const currentSock = getCurrentSock();
       if (!currentSock) {
