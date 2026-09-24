@@ -61,6 +61,7 @@ let deliverWebReply: typeof import("./deliver-reply.js").deliverWebReply;
 let createWhatsAppReplyTransportContext: typeof import("./deliver-reply.js").createWhatsAppReplyTransportContext;
 
 type DeliveryParams = Parameters<typeof deliverWebReply>[0];
+const AUTO_REPLY_RETRY_OPTIONS = { reconnectWindows: 3 };
 type DeliveryOverrides = Partial<Omit<DeliveryParams, "replyResult" | "transport">>;
 type LoadedWebMedia = Awaited<ReturnType<typeof loadWebMedia>>;
 type LoadedMediaKind = LoadedWebMedia["kind"] | "file";
@@ -269,6 +270,7 @@ describe("deliverWebReply", () => {
     expect(msg.platform.reply).toHaveBeenCalledWith(
       "Intro line\nReasoning: appears in content but is not a prefix",
       undefined,
+      AUTO_REPLY_RETRY_OPTIONS,
     );
   });
 
@@ -279,8 +281,18 @@ describe("deliverWebReply", () => {
     const delivery = await deliverWebReply(params);
 
     expect(msg.platform.reply).toHaveBeenCalledTimes(2);
-    expect(msg.platform.reply).toHaveBeenNthCalledWith(1, "aaa", undefined);
-    expect(msg.platform.reply).toHaveBeenNthCalledWith(2, "aaa", undefined);
+    expect(msg.platform.reply).toHaveBeenNthCalledWith(
+      1,
+      "aaa",
+      undefined,
+      AUTO_REPLY_RETRY_OPTIONS,
+    );
+    expect(msg.platform.reply).toHaveBeenNthCalledWith(
+      2,
+      "aaa",
+      undefined,
+      AUTO_REPLY_RETRY_OPTIONS,
+    );
     expect(typeof mockCallArg(replyLogger.info, 0, 0, "replyLogger.info")).toBe("object");
     expect(mockCallArg(replyLogger.info, 0, 1, "replyLogger.info")).toBe("auto-reply sent (text)");
     expect(delivery.providerAccepted).toBe(true);
@@ -312,7 +324,11 @@ describe("deliverWebReply", () => {
 
     const delivery = await deliverWebReply(params);
 
-    expect(msg.platform.reply).toHaveBeenCalledExactlyOnceWith(expected, undefined);
+    expect(msg.platform.reply).toHaveBeenCalledExactlyOnceWith(
+      expected,
+      undefined,
+      AUTO_REPLY_RETRY_OPTIONS,
+    );
     expect(delivery).toMatchObject({
       providerAccepted: true,
       results: [{ messageId: "reply-sent-1" }],
@@ -545,7 +561,7 @@ describe("deliverWebReply", () => {
     expect(mediaPayload.caption).toBe("aaa");
     expect(mediaPayload.mimetype).toBe("image/jpeg");
     expect(mockCallArg(msg.platform.sendMedia, 0, 1, "sendMedia")).toBeUndefined();
-    expect(msg.platform.reply).toHaveBeenCalledWith("aaa", undefined);
+    expect(msg.platform.reply).toHaveBeenCalledWith("aaa", undefined, AUTO_REPLY_RETRY_OPTIONS);
     findLoggerContext(replyLogger.info, "auto-reply sent (media)", "replyLogger.info");
     expect(logVerbose).toHaveBeenCalled();
   });
@@ -579,7 +595,11 @@ describe("deliverWebReply", () => {
     await deliverWebReply(params);
 
     expect(msg.platform.reply).toHaveBeenCalledTimes(1);
-    expect(msg.platform.reply).toHaveBeenCalledWith("    indented block", undefined);
+    expect(msg.platform.reply).toHaveBeenCalledWith(
+      "    indented block",
+      undefined,
+      AUTO_REPLY_RETRY_OPTIONS,
+    );
   });
 
   it("keeps quote threading on media and trailing text chunks for a threaded reply", async () => {
@@ -771,7 +791,7 @@ describe("deliverWebReply", () => {
     expect(mediaPayload.mimetype).toBe("audio/ogg; codecs=opus");
     expect(mockCallArg(msg.platform.sendMedia, 0, 1, "sendMedia")).toBeUndefined();
     expect(expectFirstSendMediaPayload(msg)).not.toHaveProperty("caption");
-    expect(msg.platform.reply).toHaveBeenCalledWith("cap", undefined);
+    expect(msg.platform.reply).toHaveBeenCalledWith("cap", undefined, AUTO_REPLY_RETRY_OPTIONS);
   });
 
   it("preserves accepted voice receipts without false media fallback after caption rejection", async () => {
@@ -806,7 +826,7 @@ describe("deliverWebReply", () => {
     expect(failure).toHaveProperty("cause", expect.any(PlatformMessageNotDispatchedError));
     expect(msg.platform.sendMedia).toHaveBeenCalledOnce();
     expect(msg.platform.reply).toHaveBeenCalledOnce();
-    expect(msg.platform.reply).toHaveBeenCalledWith("caption", undefined);
+    expect(msg.platform.reply).toHaveBeenCalledWith("caption", undefined, AUTO_REPLY_RETRY_OPTIONS);
     expect(onMediaAccepted).toHaveBeenCalledExactlyOnceWith(
       "http://example.com/accepted-voice.ogg",
     );
@@ -892,7 +912,7 @@ describe("deliverWebReply", () => {
     expect(mediaPayload.mimetype).toBe("audio/ogg; codecs=opus");
     expect(mockCallArg(msg.platform.sendMedia, 0, 1, "sendMedia")).toBeUndefined();
     expect(expectFirstSendMediaPayload(msg)).not.toHaveProperty("caption");
-    expect(msg.platform.reply).toHaveBeenCalledWith("cap", undefined);
+    expect(msg.platform.reply).toHaveBeenCalledWith("cap", undefined, AUTO_REPLY_RETRY_OPTIONS);
   });
 
   it("sends video media", async () => {

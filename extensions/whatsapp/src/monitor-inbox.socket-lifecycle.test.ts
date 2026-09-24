@@ -9,6 +9,10 @@ import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-run
 import { defaultRuntime } from "openclaw/plugin-sdk/runtime-env";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createWhatsAppReplyTransportContext,
+  deliverWebReply,
+} from "./auto-reply/deliver-reply.js";
+import {
   controllerContexts,
   sleepWithAbortMock,
   nextMessageId,
@@ -304,6 +308,88 @@ describe("web monitor inbox socket lifecycle", () => {
     expect(sleepWithAbortMock).toHaveBeenCalledTimes(1);
 
     await listener.close();
+  });
+
+  it("recovers an auto-reply after the first reconnect window with one message ID", async () => {
+    const onMessage = vi.fn(async () => undefined);
+    const socketRef = createSocketRef();
+    const { listener, sock, inbound } = await primeInboundReplyHandle({
+      onMessage,
+      socketRef,
+      upsertId: "auto-reply-second-window",
+      retryPolicy: fastReconnectPolicy(2),
+    });
+    sock.sendMessage
+      .mockRejectedValueOnce(new Error("connection closed"))
+      .mockRejectedValueOnce(new Error("connection closed"));
+    sleepWithAbortMock.mockImplementation(async () => {
+      socketRef.current = sock as unknown as typeof socketRef.current;
+    });
+
+    try {
+      await deliverWebReply({
+        replyResult: { text: "pong" },
+        transport: createWhatsAppReplyTransportContext(inbound),
+        maxMediaBytes: 1024 * 1024,
+        textLimit: 200,
+        replyLogger: { info: vi.fn(), warn: vi.fn() },
+        skipLog: true,
+      });
+
+      expect(sock.sendMessage).toHaveBeenCalledTimes(3);
+      const messageIds = sock.sendMessage.mock.calls.map(
+        (call: [unknown, unknown, MiscMessageGenerationOptions?]) => call[2]?.messageId,
+      );
+      expect(messageIds[0]).toMatch(WHATSAPP_MESSAGE_ID_PATTERN);
+      expect(new Set(messageIds).size).toBe(1);
+      expect(sleepWithAbortMock.mock.calls.map(([delayMs]) => delayMs)).toEqual([1, 500]);
+
+      sock.sendMessage.mockClear().mockRejectedValue(new Error("connection closed"));
+      await expect(inbound.platform.reply("ordinary send")).rejects.toThrow("connection closed");
+      expect(sock.sendMessage).toHaveBeenCalledTimes(2);
+      expect(sock.sendMessage.mock.calls[0]?.[2]?.messageId).not.toBe(messageIds[0]);
+    } finally {
+      await listener.close();
+    }
+  });
+
+  it("keeps a closed-socket failure through a reconnect gap at the window boundary", async () => {
+    const onMessage = vi.fn(async () => undefined);
+    const socketRef = createSocketRef();
+    const { listener, sock, inbound } = await primeInboundReplyHandle({
+      onMessage,
+      socketRef,
+      upsertId: "auto-reply-boundary-gap",
+      retryPolicy: fastReconnectPolicy(2),
+    });
+    sock.sendMessage.mockRejectedValueOnce(new Error("connection closed"));
+    sleepWithAbortMock.mockImplementationOnce(async () => {
+      expect(socketRef.current).toBeNull();
+    });
+    sleepWithAbortMock.mockImplementationOnce(async () => {
+      socketRef.current = sock as unknown as typeof socketRef.current;
+    });
+
+    try {
+      await deliverWebReply({
+        replyResult: { text: "pong" },
+        transport: createWhatsAppReplyTransportContext(inbound),
+        maxMediaBytes: 1024 * 1024,
+        textLimit: 200,
+        replyLogger: { info: vi.fn(), warn: vi.fn() },
+        skipLog: true,
+      });
+
+      expect(sleepWithAbortMock.mock.calls.map(([delayMs]) => delayMs)).toEqual([1, 500]);
+      expect(sock.sendMessage).toHaveBeenCalledTimes(2);
+      const messageIds = sock.sendMessage.mock.calls.map(
+        (call: [unknown, unknown, MiscMessageGenerationOptions?]) => call[2]?.messageId,
+      );
+      expect(messageIds[0]).toMatch(WHATSAPP_MESSAGE_ID_PATTERN);
+      expect(messageIds[1]).toBe(messageIds[0]);
+    } finally {
+      await listener.close();
+    }
   });
 
   type ReachoutTimelockCase = {

@@ -37,6 +37,8 @@ import { markdownToWhatsAppChunks } from "../text-runtime.js";
 import { whatsappOutboundLog } from "./loggers.js";
 import { elide } from "./util.js";
 
+const AUTO_REPLY_SEND_RETRY_OPTIONS = { reconnectWindows: 3 } as const;
+
 export type WhatsAppReplyDeliveryResult = {
   results: WhatsAppSendResult[];
   receipt: MessageReceipt;
@@ -274,7 +276,10 @@ async function deliverWebReplyInActivityScope(
       const chunkStarted = Date.now();
       const quote = getQuote();
       rememberSendResult(
-        await sendAndPreserveAccepted(() => transport.reply(chunk, quote), "text"),
+        await sendAndPreserveAccepted(
+          () => transport.reply(chunk, quote, AUTO_REPLY_SEND_RETRY_OPTIONS),
+          "text",
+        ),
       );
       if (!skipLog) {
         const durationMs = Date.now() - chunkStarted;
@@ -335,7 +340,12 @@ async function deliverWebReplyInActivityScope(
               : { document: media.buffer, fileName: media.fileName, caption };
       rememberSendResult(
         await sendAndPreserveAccepted(
-          () => transport.sendMedia({ ...mediaContent, mimetype: media.mimetype }, quote),
+          () =>
+            transport.sendMedia(
+              { ...mediaContent, mimetype: media.mimetype },
+              quote,
+              AUTO_REPLY_SEND_RETRY_OPTIONS,
+            ),
           "media",
           mediaUrl,
         ),
@@ -343,7 +353,10 @@ async function deliverWebReplyInActivityScope(
       );
       if (media.kind === "audio" && caption) {
         rememberSendResult(
-          await sendAndPreserveAccepted(() => transport.reply(caption, quote), "text"),
+          await sendAndPreserveAccepted(
+            () => transport.reply(caption, quote, AUTO_REPLY_SEND_RETRY_OPTIONS),
+            "text",
+          ),
         );
       }
       whatsappOutboundLog.info(
@@ -379,7 +392,8 @@ async function deliverWebReplyInActivityScope(
         whatsappOutboundLog.warn(`Trailing media failed; sent warning to ${conversationId}`);
         rememberSendResult(
           await sendAndPreserveAccepted(
-            () => transport.reply("⚠️ Media unavailable.", getQuote()),
+            () =>
+              transport.reply("⚠️ Media unavailable.", getQuote(), AUTO_REPLY_SEND_RETRY_OPTIONS),
             "text",
           ),
         );
@@ -393,7 +407,10 @@ async function deliverWebReplyInActivityScope(
       }
       whatsappOutboundLog.warn(`Media skipped; sent text-only to ${conversationId}`);
       rememberSendResult(
-        await sendAndPreserveAccepted(() => transport.reply(fallbackText, getQuote()), "text"),
+        await sendAndPreserveAccepted(
+          () => transport.reply(fallbackText, getQuote(), AUTO_REPLY_SEND_RETRY_OPTIONS),
+          "text",
+        ),
       );
     },
   });
@@ -401,7 +418,10 @@ async function deliverWebReplyInActivityScope(
   // Remaining text chunks after media
   for (const chunk of remainingText) {
     rememberSendResult(
-      await sendAndPreserveAccepted(() => transport.reply(chunk, getQuote()), "text"),
+      await sendAndPreserveAccepted(
+        () => transport.reply(chunk, getQuote(), AUTO_REPLY_SEND_RETRY_OPTIONS),
+        "text",
+      ),
     );
   }
   return finishDelivery();
