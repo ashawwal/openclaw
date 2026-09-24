@@ -1,46 +1,107 @@
 import { once } from "node:events";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   getTrackedWorkerCpuSources,
+  getTrackedWorkerLifecycleSnapshot,
   createCpuTrackedWorker,
+  markWorkerRetirement,
   sampleTrackedWorkerMemory,
 } from "./worker-cpu.js";
 
 const workers: Worker[] = [];
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(async () => {
   await Promise.all(workers.splice(0).map((worker) => worker.terminate()));
   vi.restoreAllMocks();
 });
 
-async function createWorker() {
-  const worker = createCpuTrackedWorker("setInterval(() => {}, 1000)", { eval: true });
+const idleSource = 'require("node:worker_threads").parentPort.on("message", () => {});';
+
+async function createWorker(filename?: URL) {
+  const worker = createCpuTrackedWorker(filename ?? idleSource, { eval: !filename });
   workers.push(worker);
   await once(worker, "online");
   return worker;
 }
 
 describe("worker CPU lifecycle", () => {
-  it("includes direct Workers in heap totals and removes their samples at native exit", async () => {
-    const initial = sampleTrackedWorkerMemory();
-    const direct = new Worker("setInterval(() => {}, 1000)", { eval: true });
-    workers.push(direct);
-    await once(direct, "online");
-    const owned = await createWorker();
-    sampleTrackedWorkerMemory();
-    await vi.waitFor(() => {
+  it.each([
+    ["sqlite-store.worker.js", "sqlite-store.worker.js"],
+    ["sqlite-store.worker.ts", "sqlite-store.worker.js"],
+    ["session-history.worker.js", "session-history.worker.js"],
+    ["private-session-worker.js", "other"],
+  ])(
+    "attributes %s and removes direct and owned Worker samples at native exit",
+    async (file, script) => {
+      const initial = sampleTrackedWorkerMemory();
+      const direct = new Worker(idleSource, { eval: true });
+      workers.push(direct);
+      await once(direct, "online");
+      const filename = join(tempDirs.make("worker-heap-"), file);
+      await writeFile(filename, idleSource);
+      const owned = await createWorker(pathToFileURL(filename));
+      const [directHeap, ownedHeap] = await Promise.all([
+        direct.getHeapStatistics(),
+        owned.getHeapStatistics(),
+      ]);
+      const directHeapRead = vi.spyOn(direct, "getHeapStatistics").mockResolvedValue(directHeap);
+      const ownedHeapRead = vi.spyOn(owned, "getHeapStatistics").mockResolvedValue(ownedHeap);
+      expect(getTrackedWorkerLifecycleSnapshot().workerCount).toBe(initial.workerCount + 2);
+      expect(directHeapRead).not.toHaveBeenCalled();
+      expect(ownedHeapRead).not.toHaveBeenCalled();
+      sampleTrackedWorkerMemory();
+      await Promise.resolve();
       const memory = sampleTrackedWorkerMemory();
+      for (const name of new Set(["other", script])) {
+        expect(memory.workerLifecycle.find((entry) => entry.script === name)?.started).toBe(
+          (initial.workerLifecycle.find((entry) => entry.script === name)?.started ?? 0) +
+            (script === "other" ? 2 : 1),
+        );
+      }
       expect(memory.workerCount).toBe(initial.workerCount + 2);
       expect(memory.workerHeapSampledCount).toBe(initial.workerHeapSampledCount + 2);
       expect(memory.workerHeapTotalBytes).toBeGreaterThan(memory.workerHeapUsedBytes);
-      expect(memory.workerHeapUsedBytes).toBeGreaterThan(0);
-    });
-    // Some consumers clear listeners before native teardown; counters must still retire.
-    direct.removeAllListeners();
-    await Promise.all([direct.terminate(), owned.terminate()]);
-    expect(sampleTrackedWorkerMemory()).toEqual(initial);
-  });
+      expect(memory.workerHeaps).toEqual([
+        ...initial.workerHeaps,
+        {
+          script: "other",
+          heapUsed: directHeap.used_heap_size,
+          heapTotal: directHeap.total_heap_size,
+        },
+        {
+          script,
+          heapUsed: ownedHeap.used_heap_size,
+          heapTotal: ownedHeap.total_heap_size,
+        },
+      ]);
+      markWorkerRetirement(owned, "idle_timeout");
+      markWorkerRetirement(owned, "failure");
+      expect(sampleTrackedWorkerMemory().workerLifecycle).toEqual(memory.workerLifecycle);
+      // Some consumers clear listeners before native teardown; counters must still retire.
+      direct.removeAllListeners();
+      await Promise.all([direct.terminate(), owned.terminate()]);
+      expect(getTrackedWorkerLifecycleSnapshot().workerCount).toBe(initial.workerCount);
+      const retired = sampleTrackedWorkerMemory();
+      expect(retired).toEqual({ ...initial, workerLifecycle: retired.workerLifecycle });
+      for (const [name, reason] of [
+        ["other", "exit"],
+        [script, "idle_timeout"],
+      ]) {
+        const before = initial.workerLifecycle.find((entry) => entry.script === name);
+        const after = retired.workerLifecycle.find((entry) => entry.script === name);
+        expect(after?.retired.find((entry) => entry.reason === reason)?.count).toBe(
+          (before?.retired.find((entry) => entry.reason === reason)?.count ?? 0) + 1,
+        );
+      }
+      expect(sampleTrackedWorkerMemory().workerLifecycle).toEqual(retired.workerLifecycle);
+    },
+  );
 
   it("bounds outstanding heap reads and excludes stale samples during a native stall", async () => {
     const worker = await createWorker();
@@ -52,7 +113,9 @@ describe("worker CPU lifecycle", () => {
       .mockReturnValue(stalled.promise);
     sampleTrackedWorkerMemory();
     await Promise.resolve();
-    expect(sampleTrackedWorkerMemory().workerHeapSampledCount).toBe(1);
+    expect(sampleTrackedWorkerMemory().workerHeaps).toEqual([
+      { script: "other", heapUsed: native.used_heap_size, heapTotal: native.total_heap_size },
+    ]);
     const now = performance.now();
     vi.spyOn(performance, "now").mockReturnValue(now + 60_001);
     for (let index = 0; index < 10; index++) {
@@ -61,6 +124,7 @@ describe("worker CPU lifecycle", () => {
         workerHeapSampledCount: 0,
         workerHeapTotalBytes: 0,
         workerHeapUsedBytes: 0,
+        workerHeaps: [],
       });
     }
     expect(read).toHaveBeenCalledTimes(2);

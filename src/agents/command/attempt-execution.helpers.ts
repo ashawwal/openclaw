@@ -36,24 +36,6 @@ import { resolveClaudeCliProjectDirForWorkspace } from "./claude-cli-project-dir
 
 const CLAUDE_CLI_TRANSCRIPT_MAX_RECORDS = 500;
 
-export function rebaseExecApprovalContinuationPromptRange(params: {
-  body: string;
-  prompt: string;
-  range?: ExecApprovalContinuationPromptRange;
-}): ExecApprovalContinuationPromptRange | undefined {
-  if (!params.range) {
-    return undefined;
-  }
-  if (!params.prompt.endsWith(params.body)) {
-    throw new Error("exec approval continuation prompt range could not be rebased");
-  }
-  const offset = params.prompt.length - params.body.length;
-  return {
-    start: offset + params.range.start,
-    end: offset + params.range.end,
-  };
-}
-
 function normalizeClaudeCliSessionId(sessionId: string | undefined): string | undefined {
   const trimmed = sessionId?.trim();
   if (!trimmed || trimmed.includes("\0") || trimmed.includes("/") || trimmed.includes("\\")) {
@@ -543,4 +525,22 @@ if (process.env.VITEST || process.env.NODE_ENV === "test") {
   (globalThis as Record<PropertyKey, unknown>)[
     Symbol.for("openclaw.attemptExecutionHelpersTestApi")
   ] = { claudeCliSessionTranscriptPath, formatClaudeCliFallbackPrelude };
+}
+
+export function rebaseExecApprovalContinuationPromptRange(params: {
+  body: string;
+  prompt: string;
+  range?: ExecApprovalContinuationPromptRange;
+}): ExecApprovalContinuationPromptRange | undefined {
+  if (!params.range) {
+    return undefined;
+  }
+  if (!params.prompt.endsWith(params.body)) {
+    throw new Error("exec approval continuation prompt range could not be rebased");
+  }
+  const offset = params.prompt.length - params.body.length;
+  return {
+    start: offset + params.range.start,
+    end: offset + params.range.end,
+  };
 }

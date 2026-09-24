@@ -347,7 +347,7 @@ export function buildBlockedCliRunResult(params: {
       },
       agentMeta: {
         sessionId: runParams.sessionId ?? "",
-        provider: runParams.provider,
+        provider: runParams.modelProvider ?? runParams.provider,
         model: context.modelId,
         ...preparedContextAgentMeta,
         ...(sessionBindingDisabled ? { clearCliSessionBinding: true } : {}),
@@ -401,7 +401,7 @@ export function buildCliDeliveredFailure(params: {
       },
       agentMeta: {
         sessionId: "",
-        provider: runParams.provider,
+        provider: runParams.modelProvider ?? runParams.provider,
         model: context.modelId,
         ...preparedContextAgentMeta,
         ...(sessionBindingDisabled || reusableCliSessionId ? { clearCliSessionBinding: true } : {}),
@@ -453,19 +453,20 @@ export function buildCliRunResult(params: {
       : sourceReplyMirror.delivered
         ? undefined
         : text
-          ? [
-              assistantTranscriptOwned
+          ? (output.textParts ?? [text]).map((partText, assistantMessageIndex) =>
+              assistantTranscriptOwned || output.textParts
                 ? setReplyPayloadMetadata(
-                    { text },
+                    { text: partText },
                     {
-                      assistantTranscriptOwned: true,
+                      ...(output.textParts ? { assistantMessageIndex } : {}),
+                      ...(assistantTranscriptOwned ? { assistantTranscriptOwned: true } : {}),
                       ...(assistantTranscriptIdempotencyKey
                         ? { assistantTranscriptIdempotencyKey }
                         : {}),
                     },
                   )
-                : { text },
-            ]
+                : { text: partText },
+            )
           : resolveReplyExpectation(runParams) === "optional"
             ? [{ text: SILENT_REPLY_TOKEN }]
             : undefined;
@@ -581,7 +582,9 @@ export function buildCliRunResult(params: {
       ...(output.toolSummary ? { toolSummary: output.toolSummary } : {}),
       agentMeta: {
         sessionId: agentSessionId,
-        provider: runParams.provider,
+        // Sessions persist the selected model provider; the CLI backend id stays in
+        // the execution trace and keys native session bindings.
+        provider: runParams.modelProvider ?? runParams.provider,
         model: context.modelId,
         ...preparedContextAgentMeta,
         usage: output.usage,

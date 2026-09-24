@@ -8,6 +8,14 @@ export type DiagnosticMemoryUsage = {
   workerHeapSampledCount?: number;
   workerHeapTotalBytes?: number;
   workerHeapUsedBytes?: number;
+  /** Live, fresh isolate samples; script is an allowlisted basename or "other". */
+  workerHeaps?: { script: string; heapUsed: number; heapTotal: number }[];
+  /** Cumulative process-owned counts; script and reason come from fixed allowlists. */
+  workerLifecycle?: {
+    script: string;
+    started: number;
+    retired: { reason: string; count: number }[];
+  }[];
 };
 
 export type DiagnosticChildProcessSpawnFields = {

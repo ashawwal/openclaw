@@ -1,6 +1,9 @@
+import path from "node:path";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
+import { listOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.test-support.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
@@ -42,6 +45,29 @@ export async function persistCliTranscriptEntry(
     throw new Error("expected CLI transcript persistence to keep the current session");
   }
   return result.sessionEntry;
+}
+
+export function resetCliAttemptFixtureDatabases(suiteRoot: string): void {
+  for (const database of listOpenClawAgentDatabasesForTest()) {
+    if (!database.path.startsWith(`${suiteRoot}${path.sep}`)) {
+      continue;
+    }
+    runOpenClawAgentWriteTransaction(
+      (fixture) => {
+        fixture.db.exec(`
+          DELETE FROM session_transcript_fts;
+          DELETE FROM session_transcript_fts_rows;
+          DELETE FROM session_nodes;
+          DELETE FROM conversations;
+          DELETE FROM auth_profile_store;
+          DELETE FROM auth_profile_state;
+          DELETE FROM cache_entries;
+        `);
+      },
+      database,
+      { operationLabel: "test.attempt-execution.reset" },
+    );
+  }
 }
 
 /** Model capability and channel discovery fixtures for CLI fallback tests. */
