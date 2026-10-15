@@ -240,22 +240,11 @@ describe("web monitor inbox socket lifecycle", () => {
 
     await inbound?.platform.reply("pong");
 
-    expect(sock.sendMessage).toHaveBeenNthCalledWith(
-      1,
-      "999@s.whatsapp.net",
-      {
-        text: "pong",
-      },
-      expect.objectContaining({ messageId: expect.any(String) }),
-    );
-    expect(sock.sendMessage).toHaveBeenNthCalledWith(
-      2,
-      "999@s.whatsapp.net",
-      {
-        text: "pong",
-      },
-      expect.objectContaining({ messageId: expect.any(String) }),
-    );
+    const firstId = sock.sendMessage.mock.calls[0]?.[2]?.messageId;
+    expect(firstId).toEqual(expect.any(String));
+    expect(sock.sendMessage.mock.calls[1]?.[2]?.messageId).toBe(firstId);
+    await inbound?.platform.reply("next logical send");
+    expect(sock.sendMessage.mock.calls[2]?.[2]?.messageId).not.toBe(firstId);
     expect(socketRef.current).toBe(sock);
     expect(sleepWithAbortMock).toHaveBeenCalledTimes(1);
 

@@ -211,6 +211,7 @@ describe("web monitor inbox delivery and dedupe", () => {
       await listener.close();
     }
   });
+
   it("delivery coordinator delays read receipts until inbound handlers complete", async () => {
     let finishMessage: (() => void) | undefined;
     const handlerGate = new Promise<void>((resolve) => {
@@ -608,7 +609,6 @@ describe("web monitor inbox delivery and dedupe", () => {
         sock.end.mock.invocationCallOrder.at(0),
       );
     }));
-
 
   it("delivery coordinator dispatches same-content messages with distinct ids in order", async () => {
     const onMessage = vi.fn(async (_message: WebInboundMessage) => {});

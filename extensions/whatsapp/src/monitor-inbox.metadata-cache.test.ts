@@ -101,7 +101,6 @@ describe("web monitor inbox metadata cache", () => {
     await second.listener.close();
   });
 
-
   it("group metadata cache refreshes provider snapshots that omit participant identities", async () => {
     const sock = getSock();
     sock.groupFetchAllParticipating.mockResolvedValueOnce({
